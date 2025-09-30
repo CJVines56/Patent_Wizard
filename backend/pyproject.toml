@@ -2,11 +2,7 @@
 name = "backend"
 version = "0.1.0"
 description = ""
-authors = [
-    {name = "CJ Vines",email = "cjvines56@tamu.edu"},
-    {name = "Christian Casteel",email = "christiancasteel@tamu.edu"},
-    {name = "Kosi Ezewudo",email = "exewudokositoni@tamu.edu}
-]
+authors = [{name = "CJ Vines", email = "cjvines56@tamu.edu"}]
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
