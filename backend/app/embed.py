@@ -5,9 +5,9 @@ import torch                                        # Deep learning framework
 from transformers import AutoTokenizer, AutoModel   # Autotokenizer takes strings and turns them into token IDs
                                                     # Automodel loads the ColBERT model  
 
-MODEL_NAME = "colbert-ir/colbertv2.0"               # ColBERT model from Hugginface
+MODEL_NAME = "colbert-ir/colbertv2.0"               # ColBERT model from Huggingface
 
-print("Loading ColBERT model from HuggingFace...")  
+print("Loading ColBERT model from HuggingFace...")
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)       # Turns text into tokens (downloads tokenizer)
 model = AutoModel.from_pretrained(MODEL_NAME)               # Turns tokens into embeddings (ColBERT outputs multivector embeddings)
