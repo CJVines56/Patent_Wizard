@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# Poetry
+poetry.lock
+*.egg-info/
+
+# Large / generated data
+uspto_bulk_dataset/
+Datasets/
+models/
+cache/
+logs/
+*.bin
+*.npy
+*.pkl
+*.h5
+*.zip
+*.csv
+*.pt
+
+# IDE / editor files
+.vscode/
+.idea/
+.DS_Store
+.env
+
+# Output / temp files
+export/
+tmp/

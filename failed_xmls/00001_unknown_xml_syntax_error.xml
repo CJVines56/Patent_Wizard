@@ -1,0 +1,1691 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE us-patent-grant SYSTEM "us-patent-grant-v47-2022-02-17.dtd" [ ]>
+<us-patent-grant lang="EN" dtd-version="v4.7 2022-02-17" file="US12404073-20250902.XML" status="PRODUCTION" id="us-patent-grant" country="US" date-produced="20250818" date-publ="20250902">
+<us-bibliographic-data-grant>
+<publication-reference>
+<document-id>
+<country>US</country>
+<doc-number>12404073</doc-number>
+<kind>B2</kind>
+<date>20250902</date>
+</document-id>
+</publication-reference>
+<application-reference appl-type="utility">
+<document-id>
+<country>US</country>
+<doc-number>17809349</doc-number>
+<date>20220628</date>
+</document-id>
+</application-reference>
+<us-application-series-code>17</us-application-series-code>
+<us-term-of-grant><us-term-extension>0</us-term-extension></us-term-of-grant>
+<classifications-ipcr>
+<classification-ipcr>
+<ipc-version-indicator><date>20060101</date></ipc-version-indicator>
+<classification-level>A</classification-level>
+<section>B</section>
+<class>65</class>
+<subclass>D</subclass>
+<main-group>23</main-group>
+<subgroup>14</subgroup>
+<symbol-position>F</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+</classification-ipcr>
+<classification-ipcr>
+<ipc-version-indicator><date>20060101</date></ipc-version-indicator>
+<classification-level>A</classification-level>
+<section>A</section>
+<class>45</class>
+<subclass>D</subclass>
+<main-group>34</main-group>
+<subgroup>00</subgroup>
+<symbol-position>L</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+</classification-ipcr>
+<classification-ipcr>
+<ipc-version-indicator><date>20060101</date></ipc-version-indicator>
+<classification-level>A</classification-level>
+<section>B</section>
+<class>65</class>
+<subclass>D</subclass>
+<main-group>25</main-group>
+<subgroup>20</subgroup>
+<symbol-position>L</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+</classification-ipcr>
+<classification-ipcr>
+<ipc-version-indicator><date>20060101</date></ipc-version-indicator>
+<classification-level>A</classification-level>
+<section>B</section>
+<class>65</class>
+<subclass>D</subclass>
+<main-group>75</main-group>
+<subgroup>54</subgroup>
+<symbol-position>L</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+</classification-ipcr>
+<classification-ipcr>
+<ipc-version-indicator><date>20060101</date></ipc-version-indicator>
+<classification-level>A</classification-level>
+<section>B</section>
+<class>65</class>
+<subclass>D</subclass>
+<main-group>75</main-group>
+<subgroup>58</subgroup>
+<symbol-position>L</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+</classification-ipcr>
+</classifications-ipcr>
+<classifications-cpc>
+<main-cpc>
+<classification-cpc>
+<cpc-version-indicator><date>20130101</date></cpc-version-indicator>
+<section>B</section>
+<class>65</class>
+<subclass>D</subclass>
+<main-group>23</main-group>
+<subgroup>14</subgroup>
+<symbol-position>F</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+<scheme-origination-code>C</scheme-origination-code>
+</classification-cpc>
+</main-cpc>
+<further-cpc>
+<classification-cpc>
+<cpc-version-indicator><date>20130101</date></cpc-version-indicator>
+<section>A</section>
+<class>45</class>
+<subclass>D</subclass>
+<main-group>34</main-group>
+<subgroup>00</subgroup>
+<symbol-position>L</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+<scheme-origination-code>C</scheme-origination-code>
+</classification-cpc>
+<classification-cpc>
+<cpc-version-indicator><date>20130101</date></cpc-version-indicator>
+<section>B</section>
+<class>65</class>
+<subclass>D</subclass>
+<main-group>25</main-group>
+<subgroup>205</subgroup>
+<symbol-position>L</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+<scheme-origination-code>C</scheme-origination-code>
+</classification-cpc>
+<classification-cpc>
+<cpc-version-indicator><date>20130101</date></cpc-version-indicator>
+<section>B</section>
+<class>65</class>
+<subclass>D</subclass>
+<main-group>75</main-group>
+<subgroup>54</subgroup>
+<symbol-position>L</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+<scheme-origination-code>C</scheme-origination-code>
+</classification-cpc>
+<classification-cpc>
+<cpc-version-indicator><date>20130101</date></cpc-version-indicator>
+<section>B</section>
+<class>65</class>
+<subclass>D</subclass>
+<main-group>75</main-group>
+<subgroup>5805</subgroup>
+<symbol-position>L</symbol-position>
+<classification-value>I</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+<scheme-origination-code>C</scheme-origination-code>
+</classification-cpc>
+<classification-cpc>
+<cpc-version-indicator><date>20130101</date></cpc-version-indicator>
+<section>A</section>
+<class>45</class>
+<subclass>D</subclass>
+<main-group>2034</main-group>
+<subgroup>002</subgroup>
+<symbol-position>L</symbol-position>
+<classification-value>A</classification-value>
+<action-date><date>20250902</date></action-date>
+<generating-office><country>US</country></generating-office>
+<classification-status>B</classification-status>
+<classification-data-source>H</classification-data-source>
+<scheme-origination-code>C</scheme-origination-code>
+</classification-cpc>
+</further-cpc>
+</classifications-cpc>
+<invention-title id="d2e43">Scent indicators on containers</invention-title>
+<us-references-cited>
+<us-citation>
+<patcit num="00001">
+<document-id>
+<country>US</country>
+<doc-number>4117946</doc-number>
+<kind>A</kind>
+<name>Kessler</name>
+<date>19781000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 43/0212</classification-cpc-text>
+<classification-national><country>US</country><main-classification>220784</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00002">
+<document-id>
+<country>US</country>
+<doc-number>4228954</doc-number>
+<kind>A</kind>
+<name>Rosenzweig</name>
+<date>19801000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B32B 5/26</classification-cpc-text>
+<classification-national><country>US</country><main-classification>239 57</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00003">
+<document-id>
+<country>US</country>
+<doc-number>4277024</doc-number>
+<kind>A</kind>
+<name>Spector</name>
+<date>19810700</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61L 9/12</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206466</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00004">
+<document-id>
+<country>US</country>
+<doc-number>4558783</doc-number>
+<kind>A</kind>
+<name>Dangerfield</name>
+<date>19851200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 73/0085</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206472</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00005">
+<document-id>
+<country>US</country>
+<doc-number>4858758</doc-number>
+<kind>A</kind>
+<name>Mitchell</name>
+<date>19890800</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 51/28</classification-cpc-text>
+<classification-national><country>US</country><main-classification>510439</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00006">
+<document-id>
+<country>US</country>
+<doc-number>4925029</doc-number>
+<kind>A</kind>
+<name>Friedman</name>
+<date>19900500</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A45D 34/00</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206581</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00007">
+<document-id>
+<country>US</country>
+<doc-number>4960240</doc-number>
+<kind>A</kind>
+<name>McElfresh</name>
+<date>19901000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61L 9/12</classification-cpc-text>
+<classification-national><country>US</country><main-classification>239 57</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00008">
+<document-id>
+<country>US</country>
+<doc-number>5163616</doc-number>
+<kind>A</kind>
+<name>Bernarducci</name>
+<date>19921100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61L 9/12</classification-cpc-text>
+<classification-national><country>US</country><main-classification>239 35</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00009">
+<document-id>
+<country>US</country>
+<doc-number>5249676</doc-number>
+<kind>A</kind>
+<name>Ashcraft</name>
+<date>19931000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 85/10</classification-cpc-text>
+<classification-national><country>US</country><main-classification>428905</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00010">
+<document-id>
+<country>US</country>
+<doc-number>5330056</doc-number>
+<kind>A</kind>
+<name>de la Rocha</name>
+<date>19940700</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 5/5088</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206229</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00011">
+<document-id>
+<country>US</country>
+<doc-number>5337897</doc-number>
+<kind>A</kind>
+<name>Yablans</name>
+<date>19940800</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 83/0858</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206823</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00012">
+<document-id>
+<country>US</country>
+<doc-number>5391420</doc-number>
+<kind>A</kind>
+<name>Bootman</name>
+<date>19950200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 5/04</classification-cpc-text>
+<classification-national><country>US</country><main-classification>424 764</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00013">
+<document-id>
+<country>US</country>
+<doc-number>5535885</doc-number>
+<kind>A</kind>
+<name>Daniel</name>
+<date>19960700</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A45D 40/0087</classification-cpc-text>
+<classification-national><country>US</country><main-classification>383107</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00014">
+<document-id>
+<country>US</country>
+<doc-number>5566693</doc-number>
+<kind>A</kind>
+<name>Gunderman</name>
+<date>19961000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A45D 40/0087</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206823</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00015">
+<document-id>
+<country>US</country>
+<doc-number>5918608</doc-number>
+<kind>A</kind>
+<name>Renna</name>
+<date>19990700</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 5/04</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206823</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00016">
+<document-id>
+<country>US</country>
+<doc-number>5960947</doc-number>
+<kind>A</kind>
+<name>Dimelis</name>
+<date>19991000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 23/14</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206730</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00017">
+<document-id>
+<country>US</country>
+<doc-number>6024386</doc-number>
+<kind>A</kind>
+<name>Spector</name>
+<date>20000200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B42D 15/04</classification-cpc-text>
+<classification-national><country>US</country><main-classification>239 57</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00018">
+<document-id>
+<country>US</country>
+<doc-number>6047992</doc-number>
+<kind>A</kind>
+<name>Hampton</name>
+<date>20000400</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 51/245</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206432</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00019">
+<document-id>
+<country>US</country>
+<doc-number>6444956</doc-number>
+<kind>B1</kind>
+<name>Witcher</name>
+<date>20020900</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>F21V 33/00</classification-cpc-text>
+<classification-national><country>US</country><main-classification>219386</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00020">
+<document-id>
+<country>US</country>
+<doc-number>6472034</doc-number>
+<kind>B1</kind>
+<name>Bourdelais</name>
+<date>20021000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G03C 11/14</classification-cpc-text>
+<classification-national><country>US</country><main-classification>430 11</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00021">
+<document-id>
+<country>US</country>
+<doc-number>6746743</doc-number>
+<kind>B2</kind>
+<name>Knoerzer</name>
+<date>20040600</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B32B 7/06</classification-cpc-text>
+<classification-national><country>US</country><main-classification>428 341</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00022">
+<document-id>
+<country>US</country>
+<doc-number>7004313</doc-number>
+<kind>B2</kind>
+<name>Mitchell</name>
+<date>20060200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 83/0805</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206812</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00023">
+<document-id>
+<country>US</country>
+<doc-number>7140135</doc-number>
+<kind>B2</kind>
+<name>Irvine</name>
+<date>20061100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 23/14</classification-cpc-text>
+<classification-national><country>US</country><main-classification>428 401</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00024">
+<document-id>
+<country>US</country>
+<doc-number>7594594</doc-number>
+<kind>B2</kind>
+<name>Troost</name>
+<date>20090900</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>C11D 3/0015</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2221455</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00025">
+<document-id>
+<country>US</country>
+<doc-number>7686513</doc-number>
+<kind>B2</kind>
+<name>Knoerzer</name>
+<date>20100300</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 75/26</classification-cpc-text>
+<classification-national><country>US</country><main-classification>383111</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00026">
+<document-id>
+<country>US</country>
+<doc-number>7798320</doc-number>
+<kind>B2</kind>
+<name>Pham</name>
+<date>20100900</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 65/42</classification-cpc-text>
+<classification-national><country>US</country><main-classification>229 8713</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00027">
+<document-id>
+<country>US</country>
+<doc-number>7866507</doc-number>
+<kind>B2</kind>
+<name>Sawin</name>
+<date>20110100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 75/545</classification-cpc-text>
+<classification-national><country>US</country><main-classification>222105</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00028">
+<document-id>
+<country>US</country>
+<doc-number>7967510</doc-number>
+<kind>B2</kind>
+<name>Martuch</name>
+<date>20110600</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 75/5833</classification-cpc-text>
+<classification-national><country>US</country><main-classification>229 8708</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00029">
+<document-id>
+<country>US</country>
+<doc-number>8012554</doc-number>
+<kind>B2</kind>
+<name>Shelley</name>
+<date>20110900</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 81/28</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2065244</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00030">
+<document-id>
+<country>US</country>
+<doc-number>8048363</doc-number>
+<kind>B2</kind>
+<name>Schlaupitz</name>
+<date>20111100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 3/04</classification-cpc-text>
+<classification-national><country>US</country><main-classification>428905</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00031">
+<document-id>
+<country>US</country>
+<doc-number>8114451</doc-number>
+<kind>B2</kind>
+<name>Sierra-Gomez</name>
+<date>20120200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 75/5838</classification-cpc-text>
+<classification-national><country>US</country><main-classification>383203</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00032">
+<document-id>
+<country>US</country>
+<doc-number>8408792</doc-number>
+<kind>B2</kind>
+<name>Cole</name>
+<date>20130400</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 77/206</classification-cpc-text>
+<classification-national><country>US</country><main-classification>383203</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00033">
+<document-id>
+<country>US</country>
+<doc-number>9144621</doc-number>
+<kind>B1</kind>
+<name>Finlay</name>
+<date>20150900</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61L 2/00</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00034">
+<document-id>
+<country>US</country>
+<doc-number>9554636</doc-number>
+<kind>B1</kind>
+<name>Piscopo</name>
+<date>20170100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A45D 40/04</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00035">
+<document-id>
+<country>US</country>
+<doc-number>9630761</doc-number>
+<kind>B2</kind>
+<name>Willey</name>
+<date>20170400</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 75/5833</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00036">
+<document-id>
+<country>US</country>
+<doc-number>9708104</doc-number>
+<kind>B2</kind>
+<name>Lyzenga</name>
+<date>20170700</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 75/5838</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00037">
+<document-id>
+<country>US</country>
+<doc-number>9896227</doc-number>
+<kind>B2</kind>
+<name>Nowzari</name>
+<date>20180200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 23/14</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00038">
+<document-id>
+<country>US</country>
+<doc-number>9968209</doc-number>
+<kind>B2</kind>
+<name>Maranon</name>
+<date>20180500</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A47F 7/286</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00039">
+<document-id>
+<country>US</country>
+<doc-number>11225355</doc-number>
+<kind>B2</kind>
+<name>Huffer</name>
+<date>20220100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 17/502</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00040">
+<document-id>
+<country>US</country>
+<doc-number>11386811</doc-number>
+<kind>B2</kind>
+<name>Bartlein</name>
+<date>20220700</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 23/14</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00041">
+<document-id>
+<country>US</country>
+<doc-number>11410577</doc-number>
+<kind>B1</kind>
+<name>Powhida</name>
+<date>20220800</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 3/10</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00042">
+<document-id>
+<country>US</country>
+<doc-number>11623805</doc-number>
+<kind>B2</kind>
+<name>Huffer</name>
+<date>20230400</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 75/5838</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206484</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00043">
+<document-id>
+<country>US</country>
+<doc-number>2001/0003565</doc-number>
+<kind>A1</kind>
+<name>McOsker</name>
+<date>20010600</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A45D 40/00</classification-cpc-text>
+<classification-national><country>US</country><main-classification>401132</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00044">
+<document-id>
+<country>US</country>
+<doc-number>2001/0027958</doc-number>
+<kind>A1</kind>
+<name>Short</name>
+<date>20011000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A45D 34/00</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206581</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00045">
+<document-id>
+<country>US</country>
+<doc-number>2002/0006455</doc-number>
+<kind>A1</kind>
+<name>Levine</name>
+<date>20020100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09B 19/0092</classification-cpc-text>
+<classification-national><country>US</country><main-classification>426534</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00046">
+<document-id>
+<country>US</country>
+<doc-number>2003/0056410</doc-number>
+<kind>A1</kind>
+<name>Witkowski</name>
+<date>20030300</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 3/0288</classification-cpc-text>
+<classification-national><country>US</country><main-classification> 40310</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00047">
+<document-id>
+<country>US</country>
+<doc-number>2003/0213724</doc-number>
+<kind>A1</kind>
+<name>Dobler</name>
+<date>20031100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61K 8/02</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206  19</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00048">
+<document-id>
+<country>US</country>
+<doc-number>2004/0065748</doc-number>
+<kind>A1</kind>
+<name>Sada</name>
+<date>20040400</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61L 9/042</classification-cpc-text>
+<classification-national><country>US</country><main-classification>239 34</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00049">
+<document-id>
+<country>US</country>
+<doc-number>2004/0226904</doc-number>
+<kind>A1</kind>
+<name>Schroeder</name>
+<date>20041100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 21/0231</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206499</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00050">
+<document-id>
+<country>US</country>
+<doc-number>2004/0238381</doc-number>
+<kind>A1</kind>
+<name>Rademaker</name>
+<date>20041200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 21/0205</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206216</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00051">
+<document-id>
+<country>US</country>
+<doc-number>2005/0061710</doc-number>
+<kind>A1</kind>
+<name>Dobler</name>
+<date>20050300</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61L 9/12</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206730</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00052">
+<document-id>
+<country>US</country>
+<doc-number>2006/0110080</doc-number>
+<kind>A1</kind>
+<name>Thomas</name>
+<date>20060500</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 33/2541</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2065241</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00053">
+<document-id>
+<country>US</country>
+<doc-number>2006/0291756</doc-number>
+<kind>A1</kind>
+<name>Thomas</name>
+<date>20061200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 33/2525</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2065244</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00054">
+<document-id>
+<country>US</country>
+<doc-number>2007/0148293</doc-number>
+<kind>A1</kind>
+<name>Lindsay</name>
+<date>20070600</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 5/42</classification-cpc-text>
+<classification-national><country>US</country><main-classification>426112</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00055">
+<document-id>
+<country>US</country>
+<doc-number>2008/0056959</doc-number>
+<kind>A1</kind>
+<name>Cuthbert</name>
+<date>20080300</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61L 9/145</classification-cpc-text>
+<classification-national><country>US</country><main-classification>422123</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00056">
+<document-id>
+<country>US</country>
+<doc-number>2008/0116213</doc-number>
+<kind>A1</kind>
+<name>Schlaupitz</name>
+<date>20080500</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 3/04</classification-cpc-text>
+<classification-national><country>US</country><main-classification>283 67</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00057">
+<document-id>
+<country>US</country>
+<doc-number>2008/0230424</doc-number>
+<kind>A1</kind>
+<name>Chawla</name>
+<date>20080900</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 1/0223</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2064595</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00058">
+<document-id>
+<country>US</country>
+<doc-number>2008/0299263</doc-number>
+<kind>A1</kind>
+<name>Piotrowski</name>
+<date>20081200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 25/205</classification-cpc-text>
+<classification-national><country>US</country><main-classification>426 87</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00059">
+<document-id>
+<country>US</country>
+<doc-number>2009/0019741</doc-number>
+<kind>A1</kind>
+<name>Schwartz</name>
+<date>20090100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 23/00</classification-cpc-text>
+<classification-national><country>US</country><main-classification> 40312</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00060">
+<document-id>
+<country>US</country>
+<doc-number>2009/0039174</doc-number>
+<kind>A1</kind>
+<name>Gaines</name>
+<date>20090200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61L 9/044</classification-cpc-text>
+<classification-national><country>US</country><main-classification>206229</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00061">
+<document-id>
+<country>US</country>
+<doc-number>2009/0173654</doc-number>
+<kind>A1</kind>
+<name>Steenblik</name>
+<date>20090700</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 19/12</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2064595</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00062">
+<document-id>
+<country>US</country>
+<doc-number>2009/0258118</doc-number>
+<kind>A1</kind>
+<name>Gillian</name>
+<date>20091000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 17/4012</classification-cpc-text>
+<classification-national><country>US</country><main-classification>426112</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00063">
+<document-id>
+<country>US</country>
+<doc-number>2009/0314677</doc-number>
+<kind>A1</kind>
+<name>Teggatz</name>
+<date>20091200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 33/004</classification-cpc-text>
+<classification-national><country>US</country><main-classification>383127</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00064">
+<document-id>
+<country>US</country>
+<doc-number>2010/0176214</doc-number>
+<kind>A1</kind>
+<name>Joshi</name>
+<date>20100700</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61L 9/03</classification-cpc-text>
+<classification-national><country>US</country><main-classification>239 57</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00065">
+<document-id>
+<country>US</country>
+<doc-number>2011/0139646</doc-number>
+<kind>A1</kind>
+<name>Sonnenberg</name>
+<date>20110600</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A45D 27/225</classification-cpc-text>
+<classification-national><country>US</country><main-classification> 53410</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00066">
+<document-id>
+<country>US</country>
+<doc-number>2011/0155606</doc-number>
+<kind>A1</kind>
+<name>McKillip</name>
+<date>20110600</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 3/10</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2064595</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00067">
+<document-id>
+<country>US</country>
+<doc-number>2012/0132557</doc-number>
+<kind>A1</kind>
+<name>Nowzari</name>
+<date>20120500</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 3/02</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2064595</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00068">
+<document-id>
+<country>US</country>
+<doc-number>2012/0219349</doc-number>
+<kind>A1</kind>
+<name>Toh</name>
+<date>20120800</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A45D 34/041</classification-cpc-text>
+<classification-national><country>US</country><main-classification>401209</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00069">
+<document-id>
+<country>US</country>
+<doc-number>2012/0315412</doc-number>
+<kind>A1</kind>
+<name>Clayton</name>
+<date>20121200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>C09D 7/70</classification-cpc-text>
+<classification-national><country>US</country><main-classification>523400</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00070">
+<document-id>
+<country>US</country>
+<doc-number>2013/0043245</doc-number>
+<kind>A1</kind>
+<name>Griffis</name>
+<date>20130200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 41/34</classification-cpc-text>
+<classification-national><country>US</country><main-classification>239 34</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00071">
+<document-id>
+<country>US</country>
+<doc-number>2013/0199266</doc-number>
+<kind>A1</kind>
+<name>Maranon</name>
+<date>20130800</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 5/00</classification-cpc-text>
+<classification-national><country>US</country><main-classification> 73 2334</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00072">
+<document-id>
+<country>US</country>
+<doc-number>2013/0270144</doc-number>
+<kind>A1</kind>
+<name>Nowzari</name>
+<date>20131000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 77/24</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2064595</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00073">
+<document-id>
+<country>US</country>
+<doc-number>2013/0341325</doc-number>
+<kind>A1</kind>
+<name>Bruna</name>
+<date>20131200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 43/02</classification-cpc-text>
+<classification-national><country>US</country><main-classification> 83 13</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00074">
+<document-id>
+<country>US</country>
+<doc-number>2014/0001071</doc-number>
+<kind>A1</kind>
+<name>Sanders</name>
+<date>20140100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 47/42</classification-cpc-text>
+<classification-national><country>US</country><main-classification>222111</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00075">
+<document-id>
+<country>US</country>
+<doc-number>2014/0138278</doc-number>
+<kind>A1</kind>
+<name>Kennedy</name>
+<date>20140500</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G06Q 90/00</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2064595</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00076">
+<document-id>
+<country>US</country>
+<doc-number>2014/0262904</doc-number>
+<kind>A1</kind>
+<name>Young</name>
+<date>20140900</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 75/28</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2065242</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00077">
+<document-id>
+<country>US</country>
+<doc-number>2014/0332434</doc-number>
+<kind>A1</kind>
+<name>Regas</name>
+<date>20141100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 23/085</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2064595</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00078">
+<document-id>
+<country>US</country>
+<doc-number>2015/0076248</doc-number>
+<kind>A1</kind>
+<name>Grodsky</name>
+<date>20150300</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 85/70</classification-cpc-text>
+<classification-national><country>US</country><main-classification>239 57</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00079">
+<document-id>
+<country>US</country>
+<doc-number>2015/0122818</doc-number>
+<kind>A1</kind>
+<name>Bruna</name>
+<date>20150500</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 51/20</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2203456</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00080">
+<document-id>
+<country>US</country>
+<doc-number>2016/0016691</doc-number>
+<kind>A1</kind>
+<name>Gillingwater</name>
+<date>20160100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 25/205</classification-cpc-text>
+<classification-national><country>US</country><main-classification>220608</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00081">
+<document-id>
+<country>US</country>
+<doc-number>2016/0100670</doc-number>
+<kind>A1</kind>
+<name>Dobler</name>
+<date>20160400</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 75/5855</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2064842</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00082">
+<document-id>
+<country>US</country>
+<doc-number>2016/0107796</doc-number>
+<kind>A1</kind>
+<name>Sibley</name>
+<date>20160400</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65B 7/285</classification-cpc-text>
+<classification-national><country>US</country><main-classification>2064595</main-classification></classification-national>
+</us-citation>
+<us-citation>
+<patcit num="00083">
+<document-id>
+<country>US</country>
+<doc-number>2017/0239382</doc-number>
+<kind>A1</kind>
+<name>Griffis</name>
+<date>20170800</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 23/12</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00084">
+<document-id>
+<country>US</country>
+<doc-number>2017/0298308</doc-number>
+<kind>A1</kind>
+<name>Labeque</name>
+<date>20171000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 43/22</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00085">
+<document-id>
+<country>US</country>
+<doc-number>2019/0023452</doc-number>
+<kind>A1</kind>
+<name>Huffer</name>
+<date>20190100</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B23K 26/0846</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00086">
+<document-id>
+<country>US</country>
+<doc-number>2019/0075844</doc-number>
+<kind>A1</kind>
+<name>De Lavallaz</name>
+<date>20190300</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A24F 23/02</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00087">
+<document-id>
+<country>US</country>
+<doc-number>2019/0224359</doc-number>
+<kind>A1</kind>
+<name>Griffis</name>
+<date>20190700</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 1/0246</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00088">
+<document-id>
+<country>US</country>
+<doc-number>2019/0307640</doc-number>
+<kind>A1</kind>
+<name>Vaughn</name>
+<date>20191000</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>A61J 1/00</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00089">
+<document-id>
+<country>US</country>
+<doc-number>2020/0160756</doc-number>
+<kind>A1</kind>
+<name>Gantt</name>
+<date>20200500</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>G09F 3/02</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00090">
+<document-id>
+<country>US</country>
+<doc-number>2021/0035474</doc-number>
+<kind>A1</kind>
+<name>Bartlein</name>
+<date>20210200</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65D 23/14</classification-cpc-text>
+</us-citation>
+<us-citation>
+<patcit num="00091">
+<document-id>
+<country>US</country>
+<doc-number>2021/0179348</doc-number>
+<kind>A1</kind>
+<name>Langlotz</name>
+<date>20210600</date>
+</document-id>
+</patcit>
+<category>cited by examiner</category>
+<classification-cpc-text>B65F 1/0026</classification-cpc-text>
+</us-citation>
+</us-references-cited>
+<number-of-claims>17</number-of-claims>
+<us-exemplary-claim>1</us-exemplary-claim>
+<us-field-of-classification-search>
+<classification-national>
+<country>US</country>
+<main-classification>2064595</main-classification>
+</classification-national>
+<classification-national>
+<country>US</country>
+<main-classification>206730</main-classification>
+</classification-national>
+<classification-national>
+<country>US</country>
+<main-classification>206731</main-classification>
+</classification-national>
+<classification-national>
+<country>US</country>
+<main-classification>206732</main-classification>
+</classification-national>
+<classification-cpc-text>B65D 23/14</classification-cpc-text>
+<classification-cpc-text>B65D 2203/02</classification-cpc-text>
+<classification-cpc-text>B65D 23/085</classification-cpc-text>
+<classification-cpc-text>B65D 33/004</classification-cpc-text>
+<classification-cpc-text>B65D 25/205</classification-cpc-text>
+<classification-cpc-text>B65D 23/12</classification-cpc-text>
+<classification-cpc-text>B65D 77/2032</classification-cpc-text>
+<classification-cpc-text>B65D 75/5855</classification-cpc-text>
+<classification-cpc-text>A45D 40/0087</classification-cpc-text>
+<classification-cpc-text>A45D 34/00</classification-cpc-text>
+<classification-cpc-text>A45D 34/02</classification-cpc-text>
+<classification-cpc-text>A45D 40/00</classification-cpc-text>
+<classification-cpc-text>A45D 2200/1036</classification-cpc-text>
+</us-field-of-classification-search>
+<figures>
+<number-of-drawing-sheets>2</number-of-drawing-sheets>
+<number-of-figures>4</number-of-figures>
+</figures>
+<us-related-documents>
+<related-publication>
+<document-id>
+<country>US</country>
+<doc-number>20230415959</doc-number>
+<kind>A1</kind>
+<date>20231228</date>
+</document-id>
+</related-publication>
+</us-related-documents>
+<us-parties>
+<us-applicants>
+<us-applicant sequence="001" app-type="applicant" designation="us-only">
+<addressbook>
+<last-name>Davis</last-name>
+<first-name>Barry</first-name>
+<address>
+<city>Auburn</city>
+<state>AL</state>
+<country>US</country>
+</address>
+</addressbook>
+<residence>
+<country>US</country>
+</residence>
+</us-applicant>
+<us-applicant sequence="002" app-type="applicant" designation="us-only">
+<addressbook>
+<last-name>Dunning</last-name>
+<first-name>Ansley</first-name>
+<address>
+<city>Auburn</city>
+<state>AL</state>
+<country>US</country>
+</address>
+</addressbook>
+<residence>
+<country>US</country>
+</residence>
+</us-applicant>
+</us-applicants>
+<inventors>
+<inventor sequence="001" designation="us-only">
+<addressbook>
+<last-name>Davis</last-name>
+<first-name>Barry</first-name>
+<address>
+<city>Auburn</city>
+<state>AL</state>
+<country>US</country>
+</address>
+</addressbook>
+</inventor>
+<inventor sequence="002" designation="us-only">
+<addressbook>
+<last-name>Dunning</last-name>
+<first-name>Ansley</first-name>
+<address>
+<city>Auburn</city>
+<state>AL</state>
+<country>US</country>
+</address>
+</addressbook>
+</inventor>
+</inventors>
+<agents>
+<agent sequence="01" rep-type="attorney">
+<addressbook>
+<last-name>Gokcek</last-name>
+<first-name>A. J.</first-name>
+<address>
+<country>unknown</country>
+</address>
+</addressbook>
+</agent>
+</agents>
+</us-parties>
+<examiners>
+<primary-examiner>
+<last-name>Reynolds</last-name>
+<first-name>Steven A.</first-name>
+<department>3735</department>
+</primary-examiner>
+<assistant-examiner>
+<last-name>Pal</last-name>
+<first-name>Prince</first-name>
+</assistant-examiner>
+</examiners>
+</us-bibliographic-data-grant>
+<abstract id="abstract">
+<p id="p-0001" num="0000">A device has a container containing scented substance. The container has a shroud coupled to an outside surface of the container. Further, the device has a scented piece that is covered by the shroud such that a customer grasps the shroud and pulls the shroud from the scented piece so that the customer can smell a scent emanating from the scented piece.</p>
+</abstract>
+<drawings id="DRAWINGS">
+<figure id="Fig-EMI-D00000" num="00000">
+<img id="EMI-D00000" he="147.74mm" wi="82.30mm" file="US12404073-20250902-D00000.TIF" alt="embedded image" img-content="drawing" img-format="tif"/>
+</figure>
+<figure id="Fig-EMI-D00001" num="00001">
+<img id="EMI-D00001" he="228.43mm" wi="161.29mm" file="US12404073-20250902-D00001.TIF" alt="embedded image" img-content="drawing" img-format="tif"/>
+</figure>
+<figure id="Fig-EMI-D00002" num="00002">
+<img id="EMI-D00002" he="171.87mm" wi="173.23mm" file="US12404073-20250902-D00002.TIF" alt="embedded image" img-content="drawing" img-format="tif"/>
+</figure>
+</drawings>
+<description id="description">
+<?BRFSUM description="Brief Summary" end="lead"?>
+<heading id="h-0001" level="1">BACKGROUND</heading>
+<p id="p-0002" num="0001">A tanning bed, which is also known as a sun-bed, is a machine that produces an artificial tan by imitating the sun's ultraviolet (UV) radiation. A typical tanning bed emits 95% UVA and only 5% UVB, although new models may only produce only UVA.</p>
+<p id="p-0003" num="0002">You can only use indoor tanning lotions when tanning in a tanning bed. There are major differences between indoor and outdoor tanning. UVA rays in a controlled environment compared to outdoor tanning that consists of both UVA and UVB natural rays in a widely varying environment.</p>
+<p id="p-0004" num="0003">There are thousands of different tanning bed lotions produced by thousands of different vendors and having thousands of different scents. One quality that is attractive to tanners is the scent of the tanning lotion. To smell a tanning bed lotion in a bottle, one must remove the lid, which is unsanitary. Further, there is no way to smell a tanning bed lotion in a packet that is not resealable.</p>
+<?BRFSUM description="Brief Summary" end="tail"?>
+<?brief-description-of-drawings description="Brief Description of Drawings" end="lead"?>
+<description-of-drawings>
+<heading id="h-0002" level="1">DESCRIPTION OF THE DRAWINGS</heading>
+<p id="p-0005" num="0004">The present disclosure can be better understood with reference to the following drawings. The elements in these drawings are not necessarily drawn to scale but are included to clearly illustrate the principles pertaining to this disclosure. Furthermore, like reference numerals designate corresponding parts throughout the several views.</p>
+<p id="p-0006" num="0005"><figref idref="DRAWINGS">FIG. <b>1</b></figref> is an exemplary tanning bed lotion packet in accordance with an embodiment of the present disclosure where a shroud covers a scented spot.</p>
+<p id="p-0007" num="0006"><figref idref="DRAWINGS">FIG. <b>2</b></figref> is the tanning bed lotion packet of <figref idref="DRAWINGS">FIG. <b>1</b></figref> with the shroud removed thereby exposing the scented spot.</p>
+<p id="p-0008" num="0007"><figref idref="DRAWINGS">FIG. <b>3</b></figref> is an exemplary tanning bed lotion bottle in accordance with an embodiment of the present disclosure where a shroud covers a scented spot.</p>
+<p id="p-0009" num="0008"><figref idref="DRAWINGS">FIG. <b>4</b></figref> is the tanning bed lotion bottle of <figref idref="DRAWINGS">FIG. <b>3</b></figref> with the shroud removed thereby exposing the scented spot.</p>
+</description-of-drawings>
+<?brief-description-of-drawings description="Brief Description of Drawings" end="tail"?>
+<?DETDESC description="Detailed Description" end="lead"?>
+<heading id="h-0003" level="1">DETAILED DESCRIPTION</heading>
+<p id="p-0010" num="0009">The present disclosure is a container that holds scented tanning bed lotion. The container is any type of housing that holds the scented tanning bed lotion. For example, the container may be a pliable packet that is opened by tearing off an edge of the packet. As another example, the container may be a rigid bottle that is opened via a lid. In either scenario, a potential customer of the scented tanning bed lotion may desire to smell the scent of the tanning bed lotion prior to purchase.</p>
+<p id="p-0011" num="0010">In accordance with an embodiment of the present disclosure, the container comprises on its outside surface a pull tab. The pull tab is coupled to the container via an adhesive. Under the pull tab is a scented spot indicative of the scent of the enclosed scented tanning bed lotion. Note that the pull tab may be pulled back exposing the scented spot. Once the customer smells the scented spot, the pull tab may be re-adhered to the container so that the next customer may pull the tab and smell the scent of the scented tanning bed lotion.</p>
+<p id="p-0012" num="0011"><figref idref="DRAWINGS">FIG. <b>1</b></figref> is scented tanning bed lotion packet <b>100</b>. The scented tanning bed lotion packet <b>100</b> is made of a durable yet flexible material. To use the scented tanning bed lotion (not shown), a customer grasps the flap <b>105</b> and tears the top of the packet off at the notch <b>104</b>.</p>
+<p id="p-0013" num="0012">The scented tanning bed lotion packet <b>100</b> comprises a pocket <b>103</b>. Inside the pocket <b>103</b> is the scented tanning bed lotion (not shown). Once the customer tears the top of the packet, the scented tanning bed lotion can be applied to the customer's body for use in a tanning bed.</p>
+<p id="p-0014" num="0013">The scented tanning bed lotion packet <b>100</b> further comprises a shroud <b>101</b> that covers and protects a scented piece (not shown) that adheres to the outside surface <b>106</b> of the scented tanning bed lotion packet <b>100</b>. The shroud <b>101</b> is coupled around a perimeter of the shroud via a glue or epoxy to the outside surface <b>106</b> of the scented tanning bed lotion packet <b>100</b>.</p>
+<p id="p-0015" num="0014">In one embodiment, the shroud <b>101</b> comprises a flap <b>102</b> that is not coupled to the outside surface <b>106</b> of the scented tanning bed lotion packet <b>100</b>. In this regard, the customer can grasp the flap <b>102</b> to pull back the shroud <b>101</b> thereby exposing the scented piece. In other embodiments, the shroud <b>101</b> does not include the flap <b>102</b>, and the customer grabs the outside edge of the shroud <b>101</b> to remove the shroud <b>101</b> from the scented piece.</p>
+<p id="p-0016" num="0015"><figref idref="DRAWINGS">FIG. <b>2</b></figref> is scented tanning bed lotion packet <b>100</b> showing the shroud <b>101</b> pulled back from a scented piece <b>201</b>. In one embodiment, the shroud <b>101</b> is pulled back through use of the flap <b>102</b>. In this regard, the customer pulls back the shroud <b>101</b> using the flap <b>102</b> exposing the scented piece <b>201</b>. In other embodiments, the shroud <b>101</b> does not include the flap <b>102</b>, and the customer grabs the outside edge of the shroud <b>101</b> to remove the shroud <b>101</b> from the scented piece.</p>
+<p id="p-0017" num="0016">When the scented piece <b>201</b> is exposed, the customer may smell the scented piece <b>201</b>. Notably, the scented piece <b>201</b> comprises a scent that is identical to the scent of the lotion contained in the pocket <b>103</b>.</p>
+<p id="p-0018" num="0017">If the customer enjoys the scent of the scented piece, he/she may purchase the scented tanning bed lotion packet <b>100</b>. To use the scented tanning bed lotion, the customer grasps the flap <b>105</b> and tears the top of the scented tanning bed lotion packet <b>100</b> at the notch <b>104</b>. This exposes the scented tanning bed lotion and allows the customer to squeeze the scented tanning bed lotion packet <b>100</b> so that the scented tanning bed lotion can be squeezed out of the pocket <b>103</b>.</p>
+<p id="p-0019" num="0018"><figref idref="DRAWINGS">FIG. <b>3</b></figref> is a scented tanning bed lotion bottle <b>300</b>. The scented tanning bed lotion bottle <b>300</b> is made of a durable, rigid material. To use the scented tanning bed lotion (not shown), a customer removes the top <b>303</b> of the scented tanning bed lotion bottle <b>300</b>, squeezes the scented tanning bed lotion bottle <b>300</b>, and scented tanning bed lotion (not shown) squirts from the mouth (not shown) of the scented tanning bed lotion bottle <b>300</b>.</p>
+<p id="p-0020" num="0019">The scented tanning bed lotion bottle <b>300</b> comprises a cavity (not shown). Inside the cavity is the scented tanning bed lotion (not shown). Once the customer removes the top <b>303</b> from the scented tanning bed lotion bottle <b>300</b>, the scented tanning bed lotion can be applied to the customer's body for use in a tanning bed.</p>
+<p id="p-0021" num="0020">The scented tanning bed lotion bottle <b>300</b> further comprises a shroud <b>301</b> that covers and protects a scented piece (not shown) that adheres to the outside surface <b>304</b> of the scented tanning bed lotion bottle <b>300</b>. The shroud <b>301</b> is coupled around a perimeter of the shroud via a glue or epoxy to the outside surface <b>304</b> of the scented tanning bed lotion bottle <b>300</b>.</p>
+<p id="p-0022" num="0021">In one embodiment, the shroud <b>301</b> comprises a flap <b>302</b> that is not coupled to the outside surface <b>304</b> of the scented tanning bed lotion bottle <b>300</b>. In this regard, the customer can grasp the flap <b>302</b> to pull back the shroud <b>301</b> thereby exposing the scented piece. In other embodiments, the shroud <b>301</b> does not include the flap <b>302</b>, and the customer grabs the outside edge of the shroud <b>301</b> to remove the shroud <b>301</b> from the scented piece.</p>
+<p id="p-0023" num="0022"><figref idref="DRAWINGS">FIG. <b>4</b></figref> is scented tanning bed lotion bottle <b>300</b> showing the shroud <b>301</b> pulled back from a scented piece <b>401</b>. In one embodiment, the shroud <b>301</b> is pulled back from the scented piece <b>401</b> through use of the flap <b>302</b>. In this regard, the customer pulls back the shroud <b>301</b> using the flap <b>302</b> exposing the scented piece <b>401</b>. In other embodiments, the shroud <b>301</b> does not include the flap <b>302</b>, and the customer grabs the outside edge of the shroud <b>301</b> to remove the shroud <b>301</b> from the scented piece <b>401</b>.</p>
+<p id="p-0024" num="0023">When the scented piece <b>401</b> is exposed, the customer may smell the scented piece <b>401</b>. Notably, the scented piece <b>401</b> exhibits a scent that is identical to the scent of the scented tanning bed lotion contained in the cavity of the scented tanning bed lotion bottle <b>300</b>.</p>
+<p id="p-0025" num="0024">If the customer enjoys the scent of the scented piece <b>401</b>, he/she may purchase the scented tanning bed lotion bottle <b>300</b>. To use the scented tanning bed lotion, the customer grasps the body <b>306</b> of the scented tanning bed lotion bottle <b>300</b> and squeezes. When the customer squeezes the scented tanning bed lotion bottle <b>300</b>, scented tanning bed lotion squirts out from the scented tanning lotion bottle <b>300</b>.</p>
+<p id="p-0026" num="0025">Note that the present disclosure describes a scented piece covered by a shroud on a tanning bed lotion packet and bottle. However, the present disclosure is not limited to tanning bed location packets and bottles. In this regard, the present disclosure relates to any type of container that contains a liquid or a powder that has a scent.</p>
+<p id="p-0027" num="0026">For example, a scented piece having a shroud may be placed on containers containing lotions, petroleum jellies, and the like. Further, a scented piece having a shroud may be placed on containers containing outdoor suntan lotion bottles, deodorants, shampoos, conditioners, cleaning supplies, detergents, softeners, wipes, and sheets, e.g., dryer sheets.</p>
+<?DETDESC description="Detailed Description" end="tail"?>
+</description>
+<us-claim-statement>What we claim is:</us-claim-statement>
+<claims id="claims">
+<claim id="CLM-00001" num="00001">
+<claim-text>1. A device, comprising:
+<claim-text>a container containing a scented substance;</claim-text>
+<claim-text>a shroud adhered to an outside surface of the container, the shroud substantially circular and having a substantially circular flap that is contiguous with and extends from the shroud; and</claim-text>
+<claim-text>a scented piece including a scented spot underneath the shroud and the substantially circular flap, the scented piece adhered to the outside surface of the container and covered by the shroud and the substantially circular flap is grasped and pulled from the scented piece so that a scent emanates from the scented piece and the scent of the scented piece is identical to the scent of the scented substance, wherein the substantially circular flap and the shroud combined have a greater diameter than the scented piece and wherein the substantially circular flap is re-adhered to the container after the substantially circular flap is pulled from the scented piece.</claim-text>
+</claim-text>
+</claim>
+<claim id="CLM-00002" num="00002">
+<claim-text>2. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the container is a packet.</claim-text>
+</claim>
+<claim id="CLM-00003" num="00003">
+<claim-text>3. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the container is a bottle.</claim-text>
+</claim>
+<claim id="CLM-00004" num="00004">
+<claim-text>4. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is a powder.</claim-text>
+</claim>
+<claim id="CLM-00005" num="00005">
+<claim-text>5. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is a liquid.</claim-text>
+</claim>
+<claim id="CLM-00006" num="00006">
+<claim-text>6. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is lotion.</claim-text>
+</claim>
+<claim id="CLM-00007" num="00007">
+<claim-text>7. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is petroleum jelly.</claim-text>
+</claim>
+<claim id="CLM-00008" num="00008">
+<claim-text>8. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is outdoor suntan lotion.</claim-text>
+</claim>
+<claim id="CLM-00009" num="00009">
+<claim-text>9. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is deodorant.</claim-text>
+</claim>
+<claim id="CLM-00010" num="00010">
+<claim-text>10. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is shampoo.</claim-text>
+</claim>
+<claim id="CLM-00011" num="00011">
+<claim-text>11. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is conditioner.</claim-text>
+</claim>
+<claim id="CLM-00012" num="00012">
+<claim-text>12. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is a cleaning supply.</claim-text>
+</claim>
+<claim id="CLM-00013" num="00013">
+<claim-text>13. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is detergent.</claim-text>
+</claim>
+<claim id="CLM-00014" num="00014">
+<claim-text>14. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is a softener.</claim-text>
+</claim>
+<claim id="CLM-00015" num="00015">
+<claim-text>15. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is a wipe.</claim-text>
+</claim>
+<claim id="CLM-00016" num="00016">
+<claim-text>16. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the substance is a dryer sheet.</claim-text>
+</claim>
+<claim id="CLM-00017" num="00017">
+<claim-text>17. The device of <claim-ref idref="CLM-00001">claim 1</claim-ref>, wherein the scented piece is located on a side of a body of the container.</claim-text>
+</claim>
+</claims>
+</us-patent-grant>
