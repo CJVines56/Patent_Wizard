@@ -4,7 +4,7 @@ version = "0.1.0"
 description = ""
 authors = [{name = "CJ Vines",email = "cjvines56@tamu.edu"}]
 readme = "README.md"
-requires-python = ">=3.13,<3.15"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "fastapi (>=0.117.1,<0.118.0)",
     "uvicorn[standard] (>=0.36.0,<0.37.0)",
@@ -13,10 +13,8 @@ dependencies = [
     "requests (>=2.32.5,<3.0.0)",
     "jsonstreams (>=0.6.0,<0.7.0)",
     "ijson (>=3.4.0,<4.0.0)",
-    "torch (>=2.8.0,<3.0.0)",
     "colbert-ai @ git+https://github.com/stanford-futuredata/ColBERT.git",
     "faiss-cpu (>=1.12.0,<2.0.0)",
-    "weaviate (>=0.1.2,<0.2.0)",
     "weaviate-client (>=4.17.0,<5.0.0)",
     "transformers (>=4.57.1,<5.0.0)",
     "pillow (>=12.0.0,<13.0.0)",
@@ -34,3 +32,9 @@ dev = [
     "pytest (>=8.4.2,<9.0.0)",
     "ruff (>=0.13.1,<0.14.0)"
 ]
+
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu124"
+priority = "explicit"
+

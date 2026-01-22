@@ -23,6 +23,18 @@ from services.download import bulk_dataset_download, output_file as DOWNLOAD_DIR
 EXPORT_PATH = Path(os.environ.get("EMBED_EXPORT_PATH", DOWNLOAD_DIR / "chunks_with_vectors.jsonl.gz"))
 
 
+def _check_weaviate():
+    try:
+        from store import get_client
+        c = get_client()
+        c.collections.list_all()
+        c.close()
+    except Exception as e:
+        raise RuntimeError(
+            "Weaviate is not reachable. Start your local Weaviate instance and try again."
+        ) from e
+
+
 def build_fake_patent():
     """Return a list of dictionaries matching store.py fields."""
     base_meta = {
@@ -175,6 +187,8 @@ if __name__ == "__main__":
             print(f"Delete failed: {e}")
 
     mode = os.environ.get("INGEST_MODE", "real-store").lower()
+    if mode in {"fake", "real-store"}:
+        _check_weaviate()
     if mode == "fake":
         run_fake_ingest()
     elif mode == "export":

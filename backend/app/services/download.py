@@ -124,6 +124,214 @@ def rich_to_plain(rich: str) -> str:
     return s.strip()
 
 
+def _token_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9]+", text or ""))
+
+
+def _split_sentences(text: str) -> list[str]:
+    if not text:
+        return []
+    parts: list[str] = []
+    for block in re.split(r"\n+", text):
+        block = block.strip()
+        if not block:
+            continue
+        splits = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", block)
+        for s in splits:
+            s = s.strip()
+            if s:
+                parts.append(s)
+    return parts
+
+
+def _tail_overlap(sentences: list[str], overlap_tokens: int) -> tuple[list[str], int]:
+    if overlap_tokens <= 0:
+        return [], 0
+    overlap: list[str] = []
+    count = 0
+    for s in reversed(sentences):
+        count += _token_count(s)
+        overlap.insert(0, s)
+        if count >= overlap_tokens:
+            break
+    return overlap, count
+
+
+def _split_long_text(text: str, max_tokens: int, overlap_tokens: int) -> list[str]:
+    sentences = _split_sentences(text)
+    if not sentences:
+        sentences = [text]
+    parts: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+    for sent in sentences:
+        sent_tokens = _token_count(sent)
+        if sent_tokens > max_tokens:
+            if current:
+                parts.append(" ".join(current).strip())
+                current = []
+                current_tokens = 0
+            words = re.findall(r"\S+", sent)
+            if not words:
+                continue
+            step = max(1, max_tokens - max(0, overlap_tokens))
+            start = 0
+            while start < len(words):
+                end = min(len(words), start + max_tokens)
+                parts.append(" ".join(words[start:end]).strip())
+                if overlap_tokens <= 0:
+                    start = end
+                else:
+                    start = max(0, end - overlap_tokens)
+            continue
+
+        if current_tokens + sent_tokens <= max_tokens or not current:
+            current.append(sent)
+            current_tokens += sent_tokens
+            continue
+
+        parts.append(" ".join(current).strip())
+        overlap, overlap_count = _tail_overlap(current, overlap_tokens)
+        current = overlap
+        current_tokens = overlap_count
+        if current_tokens + sent_tokens <= max_tokens or not current:
+            current.append(sent)
+            current_tokens += sent_tokens
+        else:
+            current = [sent]
+            current_tokens = sent_tokens
+
+    if current:
+        parts.append(" ".join(current).strip())
+    return parts
+
+
+def _merge_list_fields(left: list | None, right: list | None) -> list:
+    merged: list = []
+    for item in left or []:
+        if item not in merged:
+            merged.append(item)
+    for item in right or []:
+        if item not in merged:
+            merged.append(item)
+    return merged
+
+
+def _merge_chunks(base: dict, other: dict) -> dict:
+    merged = dict(base)
+    merged["chunk"] = (base.get("chunk", "").rstrip() + "\n\n" + other.get("chunk", "").lstrip()).strip()
+    if "fig_refs" in base or "fig_refs" in other:
+        merged["fig_refs"] = _merge_list_fields(base.get("fig_refs"), other.get("fig_refs"))
+    if "fig_images" in base or "fig_images" in other:
+        merged["fig_images"] = _merge_list_fields(base.get("fig_images"), other.get("fig_images"))
+    return merged
+
+
+def _split_chunk_if_needed(chunk: dict, max_tokens: int, overlap_tokens: int) -> list[dict]:
+    plain = rich_to_plain(chunk.get("chunk", ""))
+    if not plain:
+        return [chunk]
+    if _token_count(plain) <= max_tokens:
+        return [chunk]
+    parts = _split_long_text(plain, max_tokens, overlap_tokens)
+    out: list[dict] = []
+    part_count = len(parts)
+    for idx, part in enumerate(parts, start=1):
+        new_chunk = dict(chunk)
+        new_chunk["chunk"] = part
+        if part_count > 1:
+            new_chunk["part_index"] = idx
+            new_chunk["part_count"] = part_count
+        out.append(new_chunk)
+    return out
+
+
+def _rebalance_doc_chunks(
+    chunks: list[dict],
+    *,
+    min_tokens: int = 80,
+    max_tokens: int = 180,
+    overlap_tokens: int = 30,
+    no_merge_sections: set[str] | None = None,
+) -> list[dict]:
+    if not chunks:
+        return chunks
+    if no_merge_sections is None:
+        no_merge_sections = {"claim", "abstract", "sequence-summary", "sequence-metadata"}
+    out: list[dict] = []
+    buffer: dict | None = None
+    buffer_tokens = 0
+    buffer_section: str | None = None
+
+    def flush_buffer():
+        nonlocal buffer, buffer_tokens, buffer_section
+        if not buffer:
+            return
+        out.extend(_split_chunk_if_needed(buffer, max_tokens, overlap_tokens))
+        buffer = None
+        buffer_tokens = 0
+        buffer_section = None
+
+    for ch in chunks:
+        raw = ch.get("chunk", "")
+        if not raw and (ch.get("fig_images") or ch.get("sequence")):
+            flush_buffer()
+            out.append(ch)
+            continue
+        plain = rich_to_plain(raw)
+        if not plain:
+            continue
+        section = ch.get("section")
+        tok = _token_count(plain)
+
+        if section in no_merge_sections:
+            flush_buffer()
+            out.extend(_split_chunk_if_needed(ch, max_tokens, overlap_tokens))
+            continue
+
+        if buffer and buffer_section != section:
+            flush_buffer()
+
+        if not buffer:
+            buffer = dict(ch)
+            buffer_tokens = tok
+            buffer_section = section
+            continue
+
+        if buffer_tokens < min_tokens:
+            merged = _merge_chunks(buffer, ch)
+            merged_tokens = _token_count(rich_to_plain(merged.get("chunk", "")))
+            if merged_tokens <= max_tokens:
+                buffer = merged
+                buffer_tokens = merged_tokens
+                continue
+            flush_buffer()
+            buffer = dict(ch)
+            buffer_tokens = tok
+            buffer_section = section
+            continue
+
+        flush_buffer()
+        buffer = dict(ch)
+        buffer_tokens = tok
+        buffer_section = section
+
+    flush_buffer()
+    return out
+
+
+def _finalize_doc_chunks(
+    collector: list,
+    doc_buffer: list[dict],
+    *,
+    sample_enabled: bool,
+) -> tuple[list[dict] | None, int]:
+    if doc_buffer:
+        collector.extend(doc_buffer)
+    doc_chunks = list(doc_buffer) if sample_enabled else None
+    return doc_chunks, len(doc_buffer)
+
+
 def count_docs_in_zip(zip_path: Path) -> int:
     """Count number of patent XML sub-documents inside a weekly USPTO zip.
 
@@ -2377,9 +2585,9 @@ def bulk_dataset_download(
                         "title": title,
                     }
                     _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
-                    doc_chunks: list[dict] | None = [] if sampler else None
+                    doc_buffer: list[dict] = []
                     def _record_chunk(payload: dict):
-                        _append_chunk(chunks, doc_chunks, payload)
+                        doc_buffer.append(payload)
                     if abstract_text:
                         _record_chunk(
                             {
@@ -2430,6 +2638,7 @@ def bulk_dataset_download(
                                 }
                             )
                             counter += 1
+                    doc_chunks, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=bool(sampler))
                     _log(f"[parse] doc {i}: {doc_id} (chunks: {counter})")
                     if sampler and doc_chunks and doc_id:
                         try:
@@ -2559,8 +2768,11 @@ def bulk_dataset_download(
                                 "title": title,
                             }
                             _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
+                            doc_buffer: list[dict] = []
+                            def _record_chunk(payload: dict):
+                                doc_buffer.append(payload)
                             if abstract_text:
-                                chunks.append({"section": "abstract", 
+                                _record_chunk({"section": "abstract", 
                                                "chunk": abstract_text, 
                                                "filing_date": filing_date,
                                                "doc_id": doc_id,
@@ -2574,7 +2786,7 @@ def bulk_dataset_download(
                                 desc_text = elem_to_rich_text(para).strip()
                                 fig_refs = _fig_refs_in_elem(para)
                                 if desc_text:
-                                    chunks.append({"section": "description", 
+                                    _record_chunk({"section": "description", 
                                                "chunk": desc_text, 
                                                "filing_date": filing_date,
                                                "doc_id": doc_id,
@@ -2589,7 +2801,7 @@ def bulk_dataset_download(
                                 claim_text = elem_to_rich_text(claim).strip()
                                 fig_refs = _fig_refs_in_elem(claim)
                                 if claim_text:
-                                    chunks.append({"section": "claim", 
+                                    _record_chunk({"section": "claim", 
                                                "chunk": claim_text, 
                                                "filing_date": filing_date,
                                                "doc_id": doc_id,
@@ -2600,6 +2812,7 @@ def bulk_dataset_download(
                                                "fig_refs": fig_refs,
                                                })
                                     counter += 1
+                            _, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=False)
                 _log(f"[parse] doc {i}: {doc_id} (chunks: {counter})")
                 # Emit per-patent Markdown files + CSV manifest (no text)
                 try:
@@ -2705,11 +2918,12 @@ def bulk_dataset_download(
                                     kind_list = root.xpath("//publication-reference//document-id//kind//text()")
                                     kind = kind_list[0].strip() if kind_list else None
                                     doc_chunks: list[dict] | None = [] if sample_enabled else None
+                                    doc_buffer: list[dict] = []
                                     if doc_id and doc_id[:2] == "RE":
                                         print(f'[skip] reissue patent {doc_id}')
                                         continue
                                     def _record_chunk(payload: dict):
-                                        _append_chunk(chunks, doc_chunks, payload)
+                                        doc_buffer.append(payload)
                                     try:
                                         filing_date = root.xpath("//application-reference//document-id//date//text()")[0]
                                     except IndexError:
@@ -2789,7 +3003,7 @@ def bulk_dataset_download(
                                                     except Exception:
                                                         text = raw.decode('latin-1', errors='replace')
                                                     if text.strip():
-                                                        chunks.append({
+                                                        _record_chunk({
                                                             "section": "supplemental",
                                                             "chunk": text.strip(),
                                                             "filing_date": filing_date,
@@ -2805,6 +3019,7 @@ def bulk_dataset_download(
                                         except Exception:
                                             pass
 
+                                    doc_chunks, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=sample_enabled)
                                     _log(f"[parse] {m.name}: {doc_id} (chunks: {counter})")
                                     if sample_enabled and doc_id and assets_by_doc is not None:
                                         try:
@@ -2906,7 +3121,6 @@ def bulk_dataset_download(
             with Myzip.open(inner_xml_name, "r") as xml_stream:
                 for i, blob in enumerate(iter_uspto_subdocs(xml_stream), start=1):
                     xml_blob = clamp_patent_doc(blob)
-                    doc_chunk_start = len(chunks) if sample_enabled else None
                     # Progress update
                     if i == 1 or (i % 25 == 0):
                         _print_progress("[parse] docs", i-1, total_docs)
@@ -2980,9 +3194,9 @@ def bulk_dataset_download(
                         "title": title,
                     }
                     _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
-                    doc_chunks: list[dict] | None = [] if sample_enabled else None
+                    doc_buffer: list[dict] = []
                     def _record_chunk(payload: dict):
-                        _append_chunk(chunks, doc_chunks, payload)
+                        doc_buffer.append(payload)
                     # append that to the list of chunsks under abstract
                     if abstract_text:
                         _record_chunk({"section": "abstract", 
@@ -3032,42 +3246,39 @@ def bulk_dataset_download(
                                        "fig_refs": fig_refs,
                                        })
                             counter += 1
-                #temp_dict = {"doc_id": "", "section": "claim", "authors": "bleb bleb bleb"}
-                #temp_list=[doc_id, section, authors, text, ] 
-                #big_list.append(temp_list)
-                if sample_enabled and doc_chunk_start is not None:
-                    doc_chunks = chunks[doc_chunk_start:]
-                else:
-                    doc_chunks = None
-                print(f"[parse] doc {i}: {doc_id} (chunks: {counter})")
-                # Collect figure assets for this document (if images present)
-                if sample_enabled and doc_id and assets_by_doc is not None:
-                    try:
-                        doc_assets = _collect_figure_assets(root, _names(), _open_bytes)
-                    except Exception:
-                        doc_assets = {"images": []}
-                    assets_by_doc[doc_id] = doc_assets
-                    if doc_chunks:
-                        _attach_fig_images_to_chunks(doc_chunks, doc_assets)
-                        _append_figures_chunk(
-                            chunks,
-                            doc_chunks,
-                            doc_assets,
-                            {
-                                "filing_date": filing_date,
-                                "doc_id": doc_id,
-                                "kind": kind,
-                                "authors": authors,
-                                "classification": classification,
-                                "title": title,
-                            },
-                        )
-                    try:
-                        img_n = len(doc_assets.get("images", []))
-                        if img_n:
-                            print(f"[assets] doc {doc_id}: {img_n} image(s) found")
-                    except Exception:
-                        pass
+                    doc_chunks, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=sample_enabled)
+                    #temp_dict = {"doc_id": "", "section": "claim", "authors": "bleb bleb bleb"}
+                    #temp_list=[doc_id, section, authors, text, ] 
+                    #big_list.append(temp_list)
+                    print(f"[parse] doc {i}: {doc_id} (chunks: {counter})")
+                    # Collect figure assets for this document (if images present)
+                    if sample_enabled and doc_id and assets_by_doc is not None:
+                        try:
+                            doc_assets = _collect_figure_assets(root, _names(), _open_bytes)
+                        except Exception:
+                            doc_assets = {"images": []}
+                        assets_by_doc[doc_id] = doc_assets
+                        if doc_chunks:
+                            _attach_fig_images_to_chunks(doc_chunks, doc_assets)
+                            _append_figures_chunk(
+                                chunks,
+                                doc_chunks,
+                                doc_assets,
+                                {
+                                    "filing_date": filing_date,
+                                    "doc_id": doc_id,
+                                    "kind": kind,
+                                    "authors": authors,
+                                    "classification": classification,
+                                    "title": title,
+                                },
+                            )
+                        try:
+                            img_n = len(doc_assets.get("images", []))
+                            if img_n:
+                                print(f"[assets] doc {doc_id}: {img_n} image(s) found")
+                        except Exception:
+                            pass
             # Emit per-patent Markdown files + CSV manifest (no text)
             try:
                 if sample_k and sample_k > 0:

@@ -46,7 +46,10 @@ def ensure_collection(client):
                     name="default",
                     source_properties=["content"],
                 ),
-                Configure.NamedVectors.none(name="colbert"),
+                Configure.MultiVectors.self_provided(
+                    name="colbert",
+                    encoding=Configure.VectorIndex.MultiVector.Encoding.muvera(),
+                ),
             ],
         )
         print("Created collection: PatentData")
@@ -77,7 +80,7 @@ def store_embeddings(embeddings):
                 "fig_images": json.dumps(emb.get("fig_images", []), ensure_ascii=False),
             },
             vectors={
-                "colbert": emb.get("embedding", []),
+                "colbert": emb.get("colbert") or emb.get("embedding", []),
             },
         )
 
