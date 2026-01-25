@@ -194,15 +194,19 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
         with torch.no_grad():
             outputs = model(**tokens)
             token_embeddings = outputs.last_hidden_state.squeeze(0)
+            attn_mask = tokens["attention_mask"].squeeze(0).bool()
+            masked_embeddings = token_embeddings[attn_mask]
+            if masked_embeddings.numel() == 0:
+                masked_embeddings = token_embeddings[:1]
             chunk_vector = (
-                token_embeddings.mean(dim=0)
+                masked_embeddings.mean(dim=0)
                 .detach()
                 .cpu()
                 .numpy()
                 .tolist()
             )
             colbert_vectors = (
-                token_embeddings.detach().cpu().numpy().astype("float32").tolist()
+                masked_embeddings.detach().cpu().numpy().astype("float32").tolist()
             )
 
         chunk["embedding"] = chunk_vector
@@ -226,8 +230,12 @@ def embed_query(query, tokenizer, model, max_length=256):
     with torch.no_grad():
         outputs = model(**tokens)
 
-    token_embeddings = outputs.last_hidden_state
-    query_vector = token_embeddings.mean(dim=1)  # (1, D)
+    token_embeddings = outputs.last_hidden_state.squeeze(0)
+    attn_mask = tokens["attention_mask"].squeeze(0).bool()
+    masked_embeddings = token_embeddings[attn_mask]
+    if masked_embeddings.numel() == 0:
+        masked_embeddings = token_embeddings[:1]
+    query_vector = masked_embeddings.mean(dim=0, keepdim=True)
     query_vector = query_vector.detach().cpu().numpy().astype("float32")  # keep 2D
     return query_vector
 

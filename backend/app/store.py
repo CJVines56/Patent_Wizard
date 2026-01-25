@@ -9,11 +9,45 @@ def get_client():
         auth_credentials=Auth.api_key("enNFY0pkMGY5RENrcEljTV9lblU2UkV6U2JhZjBvZGFEWDQ2MnlHakNNWVE3VUIyTlFDRVdOQjA5WjVNPV92MjAw"),
     )
 '''
+import io
 import json
+import os
+from pathlib import Path
 
+import lmdb
+import numpy as np
 import weaviate
 from weaviate.classes.config import Property, DataType, Configure
 from weaviate.classes.init import Auth
+
+LMDB_PATH = Path(
+    os.environ.get(
+        "LMDB_PATH",
+        Path(__file__).resolve().parents[1] / "lmdb" / "colbert_vectors.lmdb",
+    )
+)
+LMDB_MAP_SIZE = int(os.environ.get("LMDB_MAP_SIZE", str(10 * 1024**3)))
+
+
+def _open_lmdb_env(path: Path) -> lmdb.Environment:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return lmdb.open(
+        str(path),
+        map_size=LMDB_MAP_SIZE,
+        subdir=True,
+        create=True,
+        lock=True,
+        readahead=False,
+        max_dbs=1,
+    )
+
+
+def _serialize_colbert(vectors) -> bytes:
+    arr = np.asarray(vectors, dtype=np.float32)
+    buffer = io.BytesIO()
+    np.save(buffer, arr, allow_pickle=False)
+    return buffer.getvalue()
+
 
 def get_client():
     return weaviate.connect_to_local(
@@ -61,30 +95,37 @@ def store_embeddings(embeddings):
     client = get_client()
     ensure_collection(client)
     collection = client.collections.get("PatentData")
+    lmdb_env = _open_lmdb_env(LMDB_PATH)
 
     print(f"Uploading {len(embeddings)} embeddings...")
 
     # docid, authors, filing date, classification, chunk, ## Added in embed --> ## label, embeddings
-    for i, emb in enumerate(embeddings):
-        collection.data.insert(
-            properties={
-                "chunk_index": i,
-                "doc_id": emb.get("doc_id", ""),
-                "authors": emb.get("authors", []),
-                "priority_date": emb.get("priority_date", ""),
-                "classification": emb.get("classification", ""),
-                "content": emb.get("chunk", ""),
-                "section": emb.get("section", ""),
-                "title": emb.get("title", ""),
-                "kind": emb.get("kind", ""),
-                "fig_images": json.dumps(emb.get("fig_images", []), ensure_ascii=False),
-            },
-            vectors={
-                "colbert": emb.get("colbert") or emb.get("embedding", []),
-            },
-        )
+    with lmdb_env.begin(write=True) as txn:
+        for i, emb in enumerate(embeddings):
+            obj_id = collection.data.insert(
+                properties={
+                    "chunk_index": i,
+                    "doc_id": emb.get("doc_id", ""),
+                    "authors": emb.get("authors", []),
+                    "priority_date": emb.get("priority_date", ""),
+                    "classification": emb.get("classification", ""),
+                    "content": emb.get("chunk", ""),
+                    "section": emb.get("section", ""),
+                    "title": emb.get("title", ""),
+                    "kind": emb.get("kind", ""),
+                    "fig_images": json.dumps(emb.get("fig_images", []), ensure_ascii=False),
+                },
+                vectors={
+                    "colbert": emb.get("colbert") or emb.get("embedding", []),
+                },
+            )
+            colbert_vectors = emb.get("colbert")
+            if obj_id and colbert_vectors:
+                payload = _serialize_colbert(colbert_vectors)
+                txn.put(str(obj_id).encode("utf-8"), payload)
 
     print(f"Uploaded {len(embeddings)} chunks to database.")
+    lmdb_env.close()
     client.close()
 
 '''
