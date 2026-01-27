@@ -22,6 +22,24 @@ Alternatives:
   - Pros: 4x-16x smaller.
   - Cons: More quality loss, higher complexity.
 
+## Token Dimensionality Reduction (Experimental)
+Decision: When producing 128-d token vectors, apply an explicit linear projection
+from 768 -> 128 with no bias, then L2-normalize per token.
+Rationale: Provides a deterministic, explicit reduction step without assuming
+model-specific ColBERT heads or hidden configs.
+Notes:
+- The projection layer is initialized once and reused.
+- This is a temporary stand-in for a true ColBERT head and can be swapped later.
+
+## Token Vector Variants
+Decision: Store four LMDB variants per claim ID:
+- 768_f32
+- 768_f16
+- 128_f32
+- 128_f16
+Rationale: Enables empirical comparisons of size/quality tradeoffs without
+re-ingesting claims.
+
 ## LMDB Keying Strategy
 Decision: Use the Weaviate object UUID as the LMDB key.
 Rationale: Direct mapping between Weaviate chunk records and ColBERT vectors.
@@ -62,3 +80,44 @@ Alternatives:
 2) Embed with ColBERT
 3) Weaviate applies MUVERA encoding to multi-vector field at index time
 4) Retrieve Weaviate UUIDs and load ColBERT vectors from LMDB by UUID
+# MUVERA multi-vector indexing (Weaviate)
+Weaviate’s MUVERA expects **multi-vector** inputs and encodes them internally into fixed-length vectors for indexing.
+
+Doc-aligned config (local client):
+
+```python
+from weaviate.classes.config import Configure
+
+client.collections.create(
+    name="PatentData",
+    properties=[...],
+    vector_config=[
+        Configure.MultiVectors.self_provided(
+            name="colbert",
+            encoding=Configure.VectorIndex.MultiVector.Encoding.muvera(),
+        )
+    ],
+)
+```
+
+Insert usage:
+
+```python
+collection.data.insert(
+    properties={...},
+    vector={"colbert": multi_vector_colbert},
+)
+```
+
+Notes:
+- You must send **multi‑vector ColBERT** at ingest **and** query time.
+- MUVERA encodes internally; you don’t store a separate “muvera” vector.
+
+Weaviate batching
+- `store.py` uses `collection.data.insert_many` to batch inserts.
+- Batch size is controlled by `WEAVIATE_BATCH_SIZE` (default 128).
+
+LMDB ColBERT storage
+- ColBERT token vectors are stored in LMDB for reranking.
+- Stored as FP16 by default (`LMDB_VECTOR_DTYPE=float16`) to save ~2× space.
+- Map size grows automatically on `MDB_MAP_FULL` by `LMDB_MAP_GROW_GB` (default 10 GB).

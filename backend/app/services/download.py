@@ -206,6 +206,45 @@ def _split_long_text(text: str, max_tokens: int, overlap_tokens: int) -> list[st
     return parts
 
 
+def _extract_claim_number(claim, fallback_index: int) -> int:
+    raw = None
+    for key in ("num", "claim-num", "claim_number", "claim-number", "id"):
+        raw = claim.get(key)
+        if raw:
+            break
+    if not raw:
+        return fallback_index
+    match = re.search(r"\d+", str(raw))
+    if not match:
+        return fallback_index
+    try:
+        return int(match.group(0))
+    except Exception:
+        return fallback_index
+
+
+def _extract_claim_type(claim, claim_text: str) -> str:
+    raw = claim.get("claim-type") or claim.get("type")
+    if raw:
+        val = str(raw).strip().lower()
+        if "depend" in val:
+            return "dependent"
+        if "independ" in val:
+            return "independent"
+    refs = claim.xpath(
+        ".//*[contains(local-name(), 'claim-ref') or contains(local-name(), 'claim-reference')]"
+    )
+    if refs:
+        return "dependent"
+    if re.search(r"\bclaim\s+\d+", claim_text or "", flags=re.IGNORECASE):
+        return "dependent"
+    return "independent"
+
+
+def _is_util_member(name: str) -> bool:
+    parts = name.replace("\\", "/").split("/")
+    return any(p.upper().startswith("UTIL") for p in parts)
+
 def _merge_list_fields(left: list | None, right: list | None) -> list:
     merged: list = []
     for item in left or []:
@@ -2426,6 +2465,7 @@ def bulk_dataset_download(
     on_batch: Callable[[list[dict]], None] | None = None,
     validate_metadata: bool = False,
     metadata_mismatch_csv: Path | None = None,
+    max_patents: int | None = 1000,
 ) -> list[dict] | None:
     '''This function takes in a start date and creates an end date 7 days later.
     It then queries the USPTO bulk data API for available datasets in that date range.
@@ -2454,6 +2494,21 @@ def bulk_dataset_download(
     return_chunks = bool(return_chunks)
     # Always collect chunk data when sampling so doc_ids are available
     collect_chunks = return_chunks or sample_enabled
+    max_patents = max_patents if (max_patents is None or max_patents > 0) else None
+    seen_doc_ids: set[str] = set()
+    stop_processing = False
+
+    def _register_doc_id(doc_id: str | None) -> bool:
+        nonlocal stop_processing
+        if not doc_id:
+            return False
+        if doc_id in seen_doc_ids:
+            return True
+        if max_patents is not None and len(seen_doc_ids) >= max_patents:
+            stop_processing = True
+            return False
+        seen_doc_ids.add(doc_id)
+        return True
     sampler: StreamingSampler | None = None
     sample_target_dir = sample_out_dir or path
     if sample_enabled:
@@ -2536,18 +2591,18 @@ def bulk_dataset_download(
                             print(f"[warn] subdoc {i} unrecoverable parse error: {e}")
                             continue
                     if is_sequence_listing(root):
-                        seq_chunks = parse_sequence_listing(root, prev_meta=last_doc_meta)
-                        if seq_chunks:
-                            chunks.extend(seq_chunks)
                         continue
                     counter = 0
-                    abstracts = root.xpath("//abstract")
-                    abstract_text = " ".join(
-                        elem_to_rich_text(a) for a in abstracts
-                    ).strip()
                     authors = ""
                     doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
                     doc_id = doc_id[0] if doc_id else None
+                    if doc_id and doc_id[:2] == "RE":
+                        print(f"Skipping reissue patent {doc_id}")
+                        continue
+                    if not _register_doc_id(doc_id):
+                        if stop_processing:
+                            break
+                        continue
                     app_number = extract_application_number(root, doc_id=doc_id)
                     kind_list = root.xpath("//publication-reference//document-id//kind//text()")
                     kind = kind_list[0].strip() if kind_list else None
@@ -2555,9 +2610,6 @@ def bulk_dataset_download(
                     if i % 25 == 0:
                         latest = doc_id or "unknown"
                         print(f"[progress][APPXML] Parsed {i} documents (last doc_id={latest})")
-                    if doc_id and doc_id[:2] == "RE":
-                        print(f"Skipping reissue patent {doc_id}")
-                        continue
                     try:
                         filing_date = root.xpath("//application-reference//document-id//date//text()")[0]
                     except IndexError:
@@ -2588,11 +2640,20 @@ def bulk_dataset_download(
                     doc_buffer: list[dict] = []
                     def _record_chunk(payload: dict):
                         doc_buffer.append(payload)
-                    if abstract_text:
+                    for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
+                        claim_text = elem_to_rich_text(claim).strip()
+                        if not claim_text:
+                            continue
+                        claim_number = _extract_claim_number(claim, ordinal)
+                        claim_type = _extract_claim_type(claim, claim_text)
+                        claim_id = f"{doc_id}-CLM-{claim_number}"
                         _record_chunk(
                             {
-                                "section": "abstract",
-                                "chunk": abstract_text,
+                                "section": "claim",
+                                "text": claim_text,
+                                "claim_id": claim_id,
+                                "claim_number": claim_number,
+                                "claim_type": claim_type,
                                 "filing_date": filing_date,
                                 "doc_id": doc_id,
                                 "kind": kind,
@@ -2602,42 +2663,6 @@ def bulk_dataset_download(
                             }
                         )
                         counter += 1
-                    for para in root.xpath("//description//p"):
-                        desc_text = elem_to_rich_text(para).strip()
-                        fig_refs = _fig_refs_in_elem(para)
-                        if desc_text:
-                            _record_chunk(
-                                {
-                                    "section": "description",
-                                    "chunk": desc_text,
-                                    "filing_date": filing_date,
-                                    "doc_id": doc_id,
-                                    "kind": kind,
-                                    "authors": authors,
-                                    "classification": classification,
-                                    "title": title,
-                                    "fig_refs": fig_refs,
-                                }
-                            )
-                            counter += 1
-                    for claim in root.xpath("//claims//claim"):
-                        claim_text = elem_to_rich_text(claim).strip()
-                        fig_refs = _fig_refs_in_elem(claim)
-                        if claim_text:
-                            _record_chunk(
-                                {
-                                    "section": "claim",
-                                    "chunk": claim_text,
-                                    "filing_date": filing_date,
-                                    "doc_id": doc_id,
-                                    "kind": kind,
-                                    "authors": authors,
-                                    "classification": classification,
-                                    "title": title,
-                                    "fig_refs": fig_refs,
-                                }
-                            )
-                            counter += 1
                     doc_chunks, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=bool(sampler))
                     _log(f"[parse] doc {i}: {doc_id} (chunks: {counter})")
                     if sampler and doc_chunks and doc_id:
@@ -2671,7 +2696,7 @@ def bulk_dataset_download(
     is_tar = file_path.name.lower().endswith((".tar", ".tar.gz", ".tgz"))
     if is_tar:
         with tarfile.open(file_path, mode='r:*') as tf:
-            members = [m for m in tf.getmembers() if m.isfile()]
+            members = [m for m in tf.getmembers() if m.isfile() and _is_util_member(m.name)]
             try:
                 total_files = len(members)
             except Exception:
@@ -2719,101 +2744,77 @@ def bulk_dataset_download(
                                 save_failed(i, xml_blob, "xml_syntax_error", None)
                                 print(f"[warn] subdoc {i} unrecoverable parse error: {e}")
                                 continue
-                    # Handle ST.26 sequence listings separately
-                    if is_sequence_listing(root):
-                        seq_chunks = parse_sequence_listing(root, prev_meta=last_doc_meta)
-                        if seq_chunks:
-                            chunks.extend(seq_chunks)
-                    else:
+                        # Handle ST.26 sequence listings separately
+                        if is_sequence_listing(root):
+                            continue
                         counter = 0
-                        # Extract sections
-                        abstracts = root.xpath("//abstract")
-                        abstract_text = " ".join(
-                            elem_to_rich_text(a) for a in abstracts
-                        ).strip()
                         authors = ""
                         doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
                         doc_id = doc_id[0] if doc_id else None
+                        if doc_id and doc_id[:2] == "RE":
+                            print(f'Skipping reissue patent {doc_id}')
+                            continue
+                        if not _register_doc_id(doc_id):
+                            if stop_processing:
+                                break
+                            continue
                         app_number = extract_application_number(root, doc_id=doc_id)
                         kind_list = root.xpath("//publication-reference//document-id//kind//text()")
                         kind = kind_list[0].strip() if kind_list else None
                         doc_chunks: list[dict] | None = [] if sampler else None
-                        if doc_id and doc_id[:2] == "RE":
-                            print(f'Skipping reissue patent {doc_id}')
-                        else:
-                            try:
-                                filing_date = root.xpath("//application-reference//document-id//date//text()")[0]
-                            except IndexError:
-                                outline(root, max_depth=4, max_children=20)
-                                print(root.xpath("//publication-reference//document-id//date//text()"))
-                                print(f'Doc ID that failed is {doc_id}')
-                                input("Fake breakpoint")
-                            
-                            classification = extract_primary_classification(root)
-                            classification_cpc = extract_all_cpc_symbols(root)
-                            title = extract_title(root)
-                            first_names = root.xpath("//inventors//inventor//addressbook//first-name//text()")
-                            last_names = root.xpath("//inventors//inventor//addressbook//last-name//text()")
-                            for name in zip(first_names, last_names):
-                                authors += " ".join(name) + "; "
-                            authors = authors[:-2]
-                            last_doc_meta = {
-                                "authors": authors,
-                                "classification": classification,
-                                "classification_cpc": classification_cpc,
-                                "filing_date": filing_date,
-                                "doc_id": doc_id,
-                                "application_number": app_number,
-                                "kind": kind,
-                                "title": title,
-                            }
-                            _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
-                            doc_buffer: list[dict] = []
-                            def _record_chunk(payload: dict):
-                                doc_buffer.append(payload)
-                            if abstract_text:
-                                _record_chunk({"section": "abstract", 
-                                               "chunk": abstract_text, 
-                                               "filing_date": filing_date,
-                                               "doc_id": doc_id,
-                                               "kind": kind,
-                                               "authors":authors,
-                                               "classification": classification,
-                                               "title": title,
-                                               })
-                                counter += 1
-                            for para in root.xpath("//description//p"):
-                                desc_text = elem_to_rich_text(para).strip()
-                                fig_refs = _fig_refs_in_elem(para)
-                                if desc_text:
-                                    _record_chunk({"section": "description", 
-                                               "chunk": desc_text, 
-                                               "filing_date": filing_date,
-                                               "doc_id": doc_id,
-                                               "kind": kind,
-                                               "authors":authors,
-                                               "classification": classification,
-                                               "title": title,
-                                               "fig_refs": fig_refs,
-                                               })
-                                    counter += 1
-                            for claim in root.xpath("//claims//claim"):
-                                claim_text = elem_to_rich_text(claim).strip()
-                                fig_refs = _fig_refs_in_elem(claim)
-                                if claim_text:
-                                    _record_chunk({"section": "claim", 
-                                               "chunk": claim_text, 
-                                               "filing_date": filing_date,
-                                               "doc_id": doc_id,
-                                               "kind": kind,
-                                               "authors":authors,
-                                               "classification": classification,
-                                               "title": title,
-                                               "fig_refs": fig_refs,
-                                               })
-                                    counter += 1
-                            _, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=False)
-                _log(f"[parse] doc {i}: {doc_id} (chunks: {counter})")
+                        try:
+                            filing_date = root.xpath("//application-reference//document-id//date//text()")[0]
+                        except IndexError:
+                            outline(root, max_depth=4, max_children=20)
+                            print(root.xpath("//publication-reference//document-id//date//text()"))
+                            print(f'Doc ID that failed is {doc_id}')
+                            input("Fake breakpoint")
+
+                        classification = extract_primary_classification(root)
+                        classification_cpc = extract_all_cpc_symbols(root)
+                        title = extract_title(root)
+                        first_names = root.xpath("//inventors//inventor//addressbook//first-name//text()")
+                        last_names = root.xpath("//inventors//inventor//addressbook//last-name//text()")
+                        for name in zip(first_names, last_names):
+                            authors += " ".join(name) + "; "
+                        authors = authors[:-2]
+                        last_doc_meta = {
+                            "authors": authors,
+                            "classification": classification,
+                            "classification_cpc": classification_cpc,
+                            "filing_date": filing_date,
+                            "doc_id": doc_id,
+                            "application_number": app_number,
+                            "kind": kind,
+                            "title": title,
+                        }
+                        _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
+                        doc_buffer: list[dict] = []
+                        def _record_chunk(payload: dict):
+                            doc_buffer.append(payload)
+                        for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
+                            claim_text = elem_to_rich_text(claim).strip()
+                            if not claim_text:
+                                continue
+                            claim_number = _extract_claim_number(claim, ordinal)
+                            claim_type = _extract_claim_type(claim, claim_text)
+                            claim_id = f"{doc_id}-CLM-{claim_number}"
+                            _record_chunk({
+                                           "section": "claim",
+                                           "text": claim_text,
+                                           "claim_id": claim_id,
+                                           "claim_number": claim_number,
+                                           "claim_type": claim_type,
+                                           "filing_date": filing_date,
+                                           "doc_id": doc_id,
+                                           "kind": kind,
+                                           "authors":authors,
+                                           "classification": classification,
+                                           "title": title,
+                                           })
+                            counter += 1
+                        _, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=False)
+                        _log(f"[parse] doc {i}: {doc_id} (chunks: {counter})")
                 # Emit per-patent Markdown files + CSV manifest (no text)
                 try:
                     if sample_k and sample_k > 0:
@@ -2850,6 +2851,8 @@ def bulk_dataset_download(
                 print(f"[archive] Found {len(zip_members)} per‑patent ZIPs; beginning parse…")
                 total_zips = len(zip_members)
                 for j, m in enumerate(zip_members, start=1):
+                    if stop_processing:
+                        break
                     _print_progress("[parse] patents", j-1, total_zips)
                     try:
                         fobj = tf.extractfile(m)
@@ -2902,26 +2905,23 @@ def bulk_dataset_download(
                                             print(f"[warn] {m.name}: subdoc {i} unrecoverable parse error: {e}")
                                             continue
                                     if is_sequence_listing(root):
-                                        seq_chunks = parse_sequence_listing(root, prev_meta=last_doc_meta)
-                                        if seq_chunks:
-                                            chunks.extend(seq_chunks)
                                         continue
                                     counter = 0
-                                    abstracts = root.xpath("//abstract")
-                                    abstract_text = " ".join(
-                                        elem_to_rich_text(a) for a in abstracts
-                                    ).strip()
                                     authors = ""
                                     doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
                                     doc_id = doc_id[0] if doc_id else None
+                                    if doc_id and doc_id[:2] == "RE":
+                                        print(f'[skip] reissue patent {doc_id}')
+                                        continue
+                                    if not _register_doc_id(doc_id):
+                                        if stop_processing:
+                                            break
+                                        continue
                                     app_number = extract_application_number(root, doc_id=doc_id)
                                     kind_list = root.xpath("//publication-reference//document-id//kind//text()")
                                     kind = kind_list[0].strip() if kind_list else None
                                     doc_chunks: list[dict] | None = [] if sample_enabled else None
                                     doc_buffer: list[dict] = []
-                                    if doc_id and doc_id[:2] == "RE":
-                                        print(f'[skip] reissue patent {doc_id}')
-                                        continue
                                     def _record_chunk(payload: dict):
                                         doc_buffer.append(payload)
                                     try:
@@ -2950,9 +2950,18 @@ def bulk_dataset_download(
                                     _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
                                     if doc_chunks is None:
                                         doc_chunks = [] if sample_enabled else None
-                                    if abstract_text:
-                                        _record_chunk({"section": "abstract",
-                                                       "chunk": abstract_text,
+                                    for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
+                                        claim_text = elem_to_rich_text(claim).strip()
+                                        if not claim_text:
+                                            continue
+                                        claim_number = _extract_claim_number(claim, ordinal)
+                                        claim_type = _extract_claim_type(claim, claim_text)
+                                        claim_id = f"{doc_id}-CLM-{claim_number}"
+                                        _record_chunk({"section": "claim",
+                                                       "text": claim_text,
+                                                       "claim_id": claim_id,
+                                                       "claim_number": claim_number,
+                                                       "claim_type": claim_type,
                                                        "filing_date": filing_date,
                                                        "doc_id": doc_id,
                                                        "kind": kind,
@@ -2961,63 +2970,6 @@ def bulk_dataset_download(
                                                        "title": title,
                                                        })
                                         counter += 1
-                                    for para in root.xpath("//description//p"):
-                                        desc_text = elem_to_rich_text(para).strip()
-                                        fig_refs = _fig_refs_in_elem(para)
-                                        if desc_text:
-                                            _record_chunk({"section": "description",
-                                                       "chunk": desc_text,
-                                                       "filing_date": filing_date,
-                                                       "doc_id": doc_id,
-                                                       "kind": kind,
-                                                       "authors":authors,
-                                                       "classification": classification,
-                                                       "title": title,
-                                                       "fig_refs": fig_refs,
-                                                       })
-                                            counter += 1
-                                    for claim in root.xpath("//claims//claim"):
-                                        claim_text = elem_to_rich_text(claim).strip()
-                                        fig_refs = _fig_refs_in_elem(claim)
-                                        if claim_text:
-                                            _record_chunk({"section": "claim",
-                                                       "chunk": claim_text,
-                                                       "filing_date": filing_date,
-                                                       "doc_id": doc_id,
-                                                       "kind": kind,
-                                                       "authors":authors,
-                                                       "classification": classification,
-                                                       "title": title,
-                                                       "fig_refs": fig_refs,
-                                                       })
-                                            counter += 1
-                                    # Attach supplemental text file (if present)
-                                    if zf_supp is not None and doc_id:
-                                        try:
-                                            supp_txt_names = [n for n in supp_names if n.lower().endswith('.txt')]
-                                            for sn in supp_txt_names:
-                                                try:
-                                                    raw = zf_supp.read(sn)
-                                                    try:
-                                                        text = raw.decode('utf-8', errors='replace')
-                                                    except Exception:
-                                                        text = raw.decode('latin-1', errors='replace')
-                                                    if text.strip():
-                                                        _record_chunk({
-                                                            "section": "supplemental",
-                                                            "chunk": text.strip(),
-                                                            "filing_date": filing_date,
-                                                            "doc_id": doc_id,
-                                                            "kind": kind,
-                                                            "authors": authors,
-                                                            "classification": classification,
-                                                            "title": title,
-                                                        })
-                                                        counter += 1
-                                                except Exception:
-                                                    pass
-                                        except Exception:
-                                            pass
 
                                     doc_chunks, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=sample_enabled)
                                     _log(f"[parse] {m.name}: {doc_id} (chunks: {counter})")
@@ -3057,6 +3009,8 @@ def bulk_dataset_download(
                                                 _log(f"[assets] doc {doc_id}: {img_n} image(s) found")
                                         except Exception:
                                             pass
+                        if stop_processing:
+                            break
                     except Exception as e:
                         print(f"[warn] failed reading inner zip {m.name}: {e}")
                         continue
@@ -3143,26 +3097,21 @@ def bulk_dataset_download(
                             continue
                     # Handle ST.26 sequence listings separately
                     if is_sequence_listing(root):
-                        seq_chunks = parse_sequence_listing(root, prev_meta=last_doc_meta)
-                        if seq_chunks:
-                            chunks.extend(seq_chunks)
                         continue
                     counter = 0
-                    # List of chunks
-                    # Extract rich-text from the abstract section of XML
-                    abstracts = root.xpath("//abstract")
-                    abstract_text = " ".join(
-                        elem_to_rich_text(a) for a in abstracts
-                    ).strip()
                     authors = ""
                     doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
                     doc_id = doc_id[0] if doc_id else None
-                    app_number = extract_application_number(root, doc_id=doc_id)
-                    kind_list = root.xpath("//publication-reference//document-id//kind//text()")
-                    kind = kind_list[0].strip() if kind_list else None
                     if doc_id and doc_id[:2] == "RE":
                         print(f'Skipping reissue patent {doc_id}')
                         continue
+                    if not _register_doc_id(doc_id):
+                        if stop_processing:
+                            break
+                        continue
+                    app_number = extract_application_number(root, doc_id=doc_id)
+                    kind_list = root.xpath("//publication-reference//document-id//kind//text()")
+                    kind = kind_list[0].strip() if kind_list else None
                     try:
                         filing_date = root.xpath("//application-reference//document-id//date//text()")[0]
                     except IndexError:
@@ -3197,10 +3146,18 @@ def bulk_dataset_download(
                     doc_buffer: list[dict] = []
                     def _record_chunk(payload: dict):
                         doc_buffer.append(payload)
-                    # append that to the list of chunsks under abstract
-                    if abstract_text:
-                        _record_chunk({"section": "abstract", 
-                                       "chunk": abstract_text, 
+                    for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
+                        claim_text = elem_to_rich_text(claim).strip()
+                        if not claim_text:
+                            continue
+                        claim_number = _extract_claim_number(claim, ordinal)
+                        claim_type = _extract_claim_type(claim, claim_text)
+                        claim_id = f"{doc_id}-CLM-{claim_number}"
+                        _record_chunk({"section": "claim",
+                                       "text": claim_text,
+                                       "claim_id": claim_id,
+                                       "claim_number": claim_number,
+                                       "claim_type": claim_type,
                                        "filing_date": filing_date,
                                        "doc_id": doc_id,
                                        "kind": kind,
@@ -3209,43 +3166,6 @@ def bulk_dataset_download(
                                        "title": title,
                                        })
                         counter += 1
-
-                    ## PUT PARAGRAPH NUMBER ##
-                    ## LABEL IMPORTANT FIELDS EARLY IN DESCRIPTION ##
-                    # Iterate through each "p" labeled section in xml (paragraph)
-                    for para in root.xpath("//description//p"):
-                        # Serialize to rich text, then append to description chunks
-                        desc_text = elem_to_rich_text(para).strip()
-                        fig_refs = _fig_refs_in_elem(para)
-                        if desc_text:
-                            _record_chunk({"section": "description", 
-                                       "chunk": desc_text, 
-                                       "filing_date": filing_date,
-                                       "doc_id": doc_id,
-                                       "kind": kind,
-                                       "authors":authors,
-                                       "classification": classification,
-                                       "title": title,
-                                       "fig_refs": fig_refs,
-                                       })
-                            counter += 1
-
-                    # Exact same process as for the description
-                    for claim in root.xpath("//claims//claim"):
-                        claim_text = elem_to_rich_text(claim).strip()
-                        fig_refs = _fig_refs_in_elem(claim)
-                        if claim_text:
-                            _record_chunk({"section": "claim", 
-                                       "chunk": claim_text, 
-                                       "filing_date": filing_date,
-                                       "doc_id": doc_id,
-                                       "kind": kind,
-                                       "authors":authors,
-                                       "classification": classification,
-                                       "title": title,
-                                       "fig_refs": fig_refs,
-                                       })
-                            counter += 1
                     doc_chunks, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=sample_enabled)
                     #temp_dict = {"doc_id": "", "section": "claim", "authors": "bleb bleb bleb"}
                     #temp_list=[doc_id, section, authors, text, ] 

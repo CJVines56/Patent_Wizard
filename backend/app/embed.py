@@ -5,12 +5,19 @@
 
 from transformers import AutoTokenizer, AutoModel
 import torch
-from services.download import rich_to_plain
+import torch.nn.functional as F
+from backend.app.services.download import rich_to_plain
 from pathlib import Path
 import json
 import gzip
 import os
 import re
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="Token indices sequence length is longer than the specified maximum sequence length.*",
+)
 
 DEFAULT_MODEL_NAME = "colbert-ir/colbertv2.0"
 MODEL_NAME = (
@@ -50,11 +57,73 @@ print("Model and tokenizer loaded successfully from scratch!")                  
 
 REBALANCE_OVERLAP_TOKENS = int(os.environ.get("REBALANCE_OVERLAP_TOKENS", "30"))
 
+TOKEN_VECTOR_DIM = int(os.environ.get("TOKEN_VECTOR_DIM", "768"))
+TOKEN_VECTOR_DTYPE = os.environ.get("TOKEN_VECTOR_DTYPE", "float16").lower()
+USE_TOKEN_PROJECTION = bool(
+    os.environ.get("USE_TOKEN_PROJECTION", "1") in {"1", "true", "True", "yes", "YES"}
+)
+COLBERT_VARIANTS = os.environ.get(
+    "COLBERT_VARIANTS",
+    "768_f32,768_f16,128_f32,128_f16",
+).lower()
+
+if TOKEN_VECTOR_DIM not in {768, 128}:
+    raise ValueError("TOKEN_VECTOR_DIM must be 768 or 128")
+if TOKEN_VECTOR_DTYPE not in {"float16", "float32"}:
+    raise ValueError("TOKEN_VECTOR_DTYPE must be 'float16' or 'float32'")
+if TOKEN_VECTOR_DIM == 128 and not USE_TOKEN_PROJECTION:
+    raise ValueError("TOKEN_VECTOR_DIM=128 requires USE_TOKEN_PROJECTION=True")
+
+_TOKEN_PROJECTION = None  # Experimental stand-in for a ColBERT head; replace later.
+
+
+def _get_token_projection():
+    global _TOKEN_PROJECTION
+    if not (_variant_enabled("128_f32") or _variant_enabled("128_f16") or TOKEN_VECTOR_DIM == 128):
+        return None
+    if _TOKEN_PROJECTION is None:
+        proj = torch.nn.Linear(768, 128, bias=False)
+        proj.to(DEVICE)
+        proj.eval()
+        _TOKEN_PROJECTION = proj
+    return _TOKEN_PROJECTION
+
+
+def _variant_enabled(name: str) -> bool:
+    if COLBERT_VARIANTS in {"all", "*"}:
+        return True
+    enabled = {v.strip() for v in COLBERT_VARIANTS.split(",") if v.strip()}
+    return name in enabled
+
+
+def _build_token_variants(token_vectors: torch.Tensor) -> dict[str, "np.ndarray"]:
+    variants: dict[str, "np.ndarray"] = {}
+    if _variant_enabled("768_f32"):
+        variants["768_f32"] = token_vectors.to(torch.float32).detach().cpu().numpy()
+    if _variant_enabled("768_f16"):
+        variants["768_f16"] = token_vectors.to(torch.float16).detach().cpu().numpy()
+    if _variant_enabled("128_f32") or _variant_enabled("128_f16"):
+        proj = _get_token_projection()
+        if proj is None:
+            raise RuntimeError("Token projection layer not initialized")
+        projected = proj(token_vectors)
+        projected = F.normalize(projected, p=2, dim=1)
+        if _variant_enabled("128_f32"):
+            variants["128_f32"] = projected.to(torch.float32).detach().cpu().numpy()
+        if _variant_enabled("128_f16"):
+            variants["128_f16"] = projected.to(torch.float16).detach().cpu().numpy()
+    return variants
+
 
 def _token_count(text: str, tokenizer) -> int:
     if not text:
         return 0
-    return tokenizer(text, return_tensors="pt", truncation=False)["input_ids"].shape[1]
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Token indices sequence length is longer than the specified maximum sequence length.*",
+        )
+        return tokenizer(text, return_tensors="pt", truncation=False)["input_ids"].shape[1]
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -132,7 +201,7 @@ def _split_oversize_text(text: str, tokenizer, max_length: int, overlap_tokens: 
 def _expand_chunks_for_token_limit(chunks, tokenizer, max_length: int, overlap_tokens: int):
     expanded = []
     for ch in chunks:
-        text = rich_to_plain((ch.get("chunk") or "").strip())
+        text = rich_to_plain((ch.get("text") or ch.get("chunk") or "").strip())
         if not text:
             expanded.append(ch)
             continue
@@ -145,6 +214,7 @@ def _expand_chunks_for_token_limit(chunks, tokenizer, max_length: int, overlap_t
         for idx, part in enumerate(parts, start=1):
             new_chunk = dict(ch)
             new_chunk["chunk"] = part
+            new_chunk["text"] = part
             new_chunk["part_index"] = idx
             new_chunk["part_count"] = part_count
             expanded.append(new_chunk)
@@ -156,17 +226,24 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
     embeddings = []
     model.eval()
 
+    model_max = getattr(tokenizer, "model_max_length", None)
+    effective_max = max_length
+    if model_max and isinstance(model_max, int):
+        effective_max = min(max_length, model_max)
+
     chunks = _expand_chunks_for_token_limit(
         chunks,
         tokenizer,
-        max_length,
+        effective_max,
         overlap_tokens=REBALANCE_OVERLAP_TOKENS,
     )
 
 # Loop through the chunks based on label, clean text up further, and then tokenize.             #
+    progress_every = int(os.environ.get("EMBED_PROGRESS_EVERY", "50"))
     for idx, chunk in enumerate(chunks):
-        print(f'Embedding chunk {idx + 1} of {len(chunks)})')
-        text = rich_to_plain((chunk.get("chunk") or "").strip())
+        if progress_every > 0 and (idx == 0 or (idx + 1) % progress_every == 0):
+            print(f"Embedding chunk {idx + 1} of {len(chunks)})")
+        text = rich_to_plain((chunk.get("text") or chunk.get("chunk") or "").strip())
 
         if not text:
             print(f"Empty chunk at index {idx}")
@@ -178,15 +255,18 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
             return_tensors="pt",        # change format from lists to pt tensors so ColBERT can read
             truncation=True,            # truncate chunks that go over the token limits
             padding="max_length",       # add zero tokens to make sure tensors are equal size. Helps the model embed faster
-            max_length=max_length     # the token limit
+            max_length=effective_max     # the token limit
         )
         tokens = {k: v.to(DEVICE) for k, v in tokens.items()}
 
 # Warning message if a chunk was truncated, this means I need to make chunks shorter.           #
-        if tokens["input_ids"].shape[1] == max_length:
-            token_count = tokenizer(text, return_tensors="pt", truncation=False)["input_ids"].shape[1]
-            if token_count > max_length:
-                print(f"WARNING chunk", chunk.get("section"), " truncated from {token_count} tokens to {max_length}.")
+        if tokens["input_ids"].shape[1] == effective_max:
+            token_count = _token_count(text, tokenizer)
+            if token_count > effective_max:
+                print(
+                    f"WARNING chunk {chunk.get('section')} truncated from "
+                    f"{token_count} tokens to {effective_max}."
+                )
 
 # Embed the tokenized text by running it through ColBERT. Tell Pytorch not to track gradients.  #
 # stops the collection of tracking data to save a lot of computing time.                        #
@@ -194,10 +274,14 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
         with torch.no_grad():
             outputs = model(**tokens)
             token_embeddings = outputs.last_hidden_state.squeeze(0)
+            if token_embeddings.shape[-1] != 768:
+                raise ValueError(
+                    f"Expected 768-d token embeddings, got {token_embeddings.shape[-1]}"
+                )
             attn_mask = tokens["attention_mask"].squeeze(0).bool()
             masked_embeddings = token_embeddings[attn_mask]
             if masked_embeddings.numel() == 0:
-                masked_embeddings = token_embeddings[:1]
+                masked_embeddings = token_embeddings[attn_mask.sum().item():]
             chunk_vector = (
                 masked_embeddings.mean(dim=0)
                 .detach()
@@ -205,12 +289,22 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
                 .numpy()
                 .tolist()
             )
-            colbert_vectors = (
-                masked_embeddings.detach().cpu().numpy().astype("float32").tolist()
-            )
+            token_vectors = masked_embeddings
+            colbert_variants = _build_token_variants(token_vectors)
+            if TOKEN_VECTOR_DIM == 768:
+                colbert_vectors = colbert_variants.get(
+                    "768_f16" if TOKEN_VECTOR_DTYPE == "float16" else "768_f32"
+                )
+            else:
+                colbert_vectors = colbert_variants.get(
+                    "128_f16" if TOKEN_VECTOR_DTYPE == "float16" else "128_f32"
+                )
+            if colbert_vectors is None:
+                raise RuntimeError("Configured ColBERT variant not available")
 
         chunk["embedding"] = chunk_vector
         chunk["colbert"] = colbert_vectors
+        chunk["colbert_variants"] = colbert_variants
         embeddings.append(chunk)
 
     return embeddings
