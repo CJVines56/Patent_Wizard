@@ -182,6 +182,42 @@ Troubleshooting Docker
 - If you see `dockerDesktopLinuxEngine` pipe errors, Docker Desktop isn’t running. Open Docker Desktop and wait for “Docker Engine running”.
 - Run `docker info` in a new terminal to confirm the engine is up before `docker compose up -d`.
 
+## Step-by-step: correct model + ingest + retrieval
+Use the same 768-dim ColBERT model for both ingest and query-time retrieval.
+
+1) Start Weaviate
+```powershell
+cd backend\app
+docker compose up -d
+```
+
+2) Force the same ColBERT model (important)
+```powershell
+$env:COLBERT_MODEL_NAME="colbert-ir/colbertv2.0"
+$env:MODEL_NAME=$env:COLBERT_MODEL_NAME
+```
+
+3) (Optional) disable LMDB shard creation
+```powershell
+$env:WRITE_LMDB="0"
+```
+
+4) Ingest to Weaviate
+```powershell
+cd C:\Users\Optim\Patent_Wizard
+poetry run python backend/app/test_connection.py
+```
+
+5) Run retrieval + rerank
+```powershell
+poetry run python backend/app/scripts/retrieve_rerank.py --query "transistor system" --shard 768_f16
+```
+
+6) Or use the GUI
+```powershell
+poetry run python backend/app/scripts/retrieve_rerank_gui.py
+```
+
 ## Environment variables (INGEST_MODE)
 `backend/app/test_connection.py` reads `INGEST_MODE` from the environment. If it’s unset, it defaults to `real-store`.
 
@@ -201,6 +237,9 @@ $env:TOKEN_VECTOR_DIM="768"          # primary variant for emb["colbert"] (768 o
 $env:TOKEN_VECTOR_DTYPE="float16"    # primary dtype for emb["colbert"]
 $env:USE_TOKEN_PROJECTION="1"        # required when TOKEN_VECTOR_DIM=128
 $env:COLBERT_VARIANTS="768_f32,768_f16,128_f32,128_f16"
+$env:COLBERT_MODEL_NAME="colbert-ir/colbertv2.0"  # keep ingest/query dimensions aligned (768)
+$env:MODEL_NAME=$env:COLBERT_MODEL_NAME
+$env:WRITE_LMDB="1"                  # set to "0" to skip LMDB shard writes
 $env:WEAVIATE_BATCH_SIZE="128"
 $env:LMDB_MAP_GROW_GB="10"
 $env:LMDB_MAP_SIZE="21474836480"
@@ -219,6 +258,12 @@ Generate a query vector with:
 ```python
 from backend.app.embed import embed_query, tokenizer, model
 qvec = embed_query("your query", tokenizer, model)[0].tolist()
+```
+PowerShell-friendly version:
+```powershell
+$body = @{ query = "{ Get { Claim(limit: 5) { claim_id doc_id claim_type text } } }" } | ConvertTo-Json
+$resp = Invoke-WebRequest -Uri "http://localhost:8080/v1/graphql" -Method Post -Headers @{ "Content-Type" = "application/json" } -Body $body -UseBasicParsing
+($resp.Content | ConvertFrom-Json).data.Get.Claim
 ```
 
 ## LMDB lookup + deserialization

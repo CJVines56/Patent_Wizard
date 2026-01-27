@@ -33,6 +33,7 @@ LMDB_VECTOR_DTYPE = os.environ.get(
     os.environ.get("LMDB_VECTOR_DTYPE", "float16"),
 ).lower()
 WEAVIATE_BATCH_SIZE = int(os.environ.get("WEAVIATE_BATCH_SIZE", "128"))
+WRITE_LMDB = os.environ.get("WRITE_LMDB", "1").strip() not in {"0", "false", "False", "no", "NO"}
 
 LMDB_VARIANT_PATHS = {
     "768_f32": LMDB_PATH_768_F32,
@@ -164,10 +165,11 @@ def ensure_collection(client):
 
 def store_embeddings(embeddings):
     client = get_client()
-    lmdb_envs: dict[str, lmdb.Environment] = {
-        name: _open_lmdb_env(path) for name, path in LMDB_VARIANT_PATHS.items()
-    }
-    lmdb_env_legacy = _open_lmdb_env(LMDB_PATH)
+    lmdb_envs: dict[str, lmdb.Environment] = {}
+    lmdb_env_legacy: lmdb.Environment | None = None
+    if WRITE_LMDB:
+        lmdb_envs = {name: _open_lmdb_env(path) for name, path in LMDB_VARIANT_PATHS.items()}
+        lmdb_env_legacy = _open_lmdb_env(LMDB_PATH)
     try:
         ensure_collection(client)
         claim_collection = client.collections.get("Claim")
@@ -247,47 +249,49 @@ def store_embeddings(embeddings):
             if result.has_errors:
                 print(f"[warn] batch insert had {len(result.errors)} error(s)")
 
-            lmdb_rows_by_variant: dict[str, list[tuple[str, list]]] = {
-                name: [] for name in lmdb_envs.keys()
-            }
-            lmdb_rows_legacy: list[tuple[str, list]] = []
-            for idx, obj_id in result.uuids.items():
-                emb = batch[idx]
-                colbert_variants = emb.get("colbert_variants") or {}
-                if colbert_variants:
-                    for name, vecs in colbert_variants.items():
-                        if name not in lmdb_rows_by_variant:
-                            continue
-                        size = getattr(vecs, "size", None)
-                        if size is None:
-                            try:
-                                size = len(vecs)
-                            except Exception:
-                                size = 0
-                        if size:
-                            lmdb_rows_by_variant[name].append((str(obj_id), vecs))
-                else:
-                    colbert_vectors = emb.get("colbert")
-                    if colbert_vectors is not None:
-                        size = getattr(colbert_vectors, "size", None)
-                        if size is None:
-                            try:
-                                size = len(colbert_vectors)
-                            except Exception:
-                                size = 0
-                        if size:
-                            lmdb_rows_legacy.append((str(obj_id), colbert_vectors))
-            for name, rows in lmdb_rows_by_variant.items():
-                if rows:
-                    _write_lmdb_vectors(lmdb_envs[name], rows)
-            if lmdb_rows_legacy:
-                _write_lmdb_vectors(lmdb_env_legacy, lmdb_rows_legacy)
+            if WRITE_LMDB:
+                lmdb_rows_by_variant: dict[str, list[tuple[str, list]]] = {
+                    name: [] for name in lmdb_envs.keys()
+                }
+                lmdb_rows_legacy: list[tuple[str, list]] = []
+                for idx, obj_id in result.uuids.items():
+                    emb = batch[idx]
+                    colbert_variants = emb.get("colbert_variants") or {}
+                    if colbert_variants:
+                        for name, vecs in colbert_variants.items():
+                            if name not in lmdb_rows_by_variant:
+                                continue
+                            size = getattr(vecs, "size", None)
+                            if size is None:
+                                try:
+                                    size = len(vecs)
+                                except Exception:
+                                    size = 0
+                            if size:
+                                lmdb_rows_by_variant[name].append((str(obj_id), vecs))
+                    else:
+                        colbert_vectors = emb.get("colbert")
+                        if colbert_vectors is not None:
+                            size = getattr(colbert_vectors, "size", None)
+                            if size is None:
+                                try:
+                                    size = len(colbert_vectors)
+                                except Exception:
+                                    size = 0
+                            if size:
+                                lmdb_rows_legacy.append((str(obj_id), colbert_vectors))
+                for name, rows in lmdb_rows_by_variant.items():
+                    if rows:
+                        _write_lmdb_vectors(lmdb_envs[name], rows)
+                if lmdb_rows_legacy and lmdb_env_legacy is not None:
+                    _write_lmdb_vectors(lmdb_env_legacy, lmdb_rows_legacy)
 
         print(f"Uploaded {len(embeddings)} claims to database.")
     finally:
         for env in lmdb_envs.values():
             env.close()
-        lmdb_env_legacy.close()
+        if lmdb_env_legacy is not None:
+            lmdb_env_legacy.close()
         client.close()
 
 '''

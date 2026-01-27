@@ -40,6 +40,18 @@ Decision: Store four LMDB variants per claim ID:
 Rationale: Enables empirical comparisons of size/quality tradeoffs without
 re-ingesting claims.
 
+## Model Dimension Alignment (Weaviate/MUVERA)
+Decision: Force the same 768-dim ColBERT model at both ingest and retrieval.
+Rationale: Weaviate's vector index expects a fixed dimensionality; mixing
+models (e.g., 256-dim vs 768-dim) causes nearVector dimension mismatch errors.
+Implementation note:
+- Set `COLBERT_MODEL_NAME=colbert-ir/colbertv2.0` (and `MODEL_NAME` to match)
+  before ingest and before retrieval scripts/GUI.
+
+## Optional LMDB Writes
+Decision: Allow disabling LMDB shard creation via `WRITE_LMDB=0`.
+Rationale: Teammates can ingest into Weaviate without copying large LMDB shards.
+
 ## LMDB Keying Strategy
 Decision: Use the Weaviate object UUID as the LMDB key.
 Rationale: Direct mapping between Weaviate chunk records and ColBERT vectors.
