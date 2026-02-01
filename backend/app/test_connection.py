@@ -206,14 +206,21 @@ def real_ingest(
             bulk_dataset_download(
                 "2025-09-01",
                 DOWNLOAD_DIR,
-                use_manifest=True,
+                use_manifest=False,
                 sample_k=0,
+                max_patents=1000,
                 return_chunks=False,
                 batch_size=ingest_batch_size,
                 on_batch=_record_batch,
             )
         else:
-            chunks = bulk_dataset_download("2025-09-01", DOWNLOAD_DIR, use_manifest=True, sample_k=0)
+            chunks = bulk_dataset_download(
+                "2025-09-01",
+                DOWNLOAD_DIR,
+                use_manifest=False,
+                sample_k=0,
+                max_patents=1000,
+            )
             _record_batch(chunks)
     finally:
         if export_handle:

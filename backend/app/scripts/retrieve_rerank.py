@@ -55,6 +55,9 @@ class ClaimHit:
 
 def _post_graphql(query: str) -> dict:
     resp = requests.post(WEAVIATE_GRAPHQL, json={"query": query}, timeout=60)
+    if resp.status_code != 200:
+        print("STATUS:", resp.status_code)
+        print("RESPONSE:", resp.text)
     resp.raise_for_status()
     payload = resp.json()
     if payload.get("errors"):
@@ -119,11 +122,14 @@ def _embed_query_tokens(query: str, shard: str) -> np.ndarray:
     return masked.to(dtype).detach().cpu().numpy()
 
 
-def retrieve_claims(query: str, limit: int = 200) -> list[ClaimHit]:
-    dense_vec = _embed_query_dense(query).tolist()
+def retrieve_claims(query: str, limit: int = 200, shard: str = "768_f16") -> list[ClaimHit]:
+    shard = shard.lower()
+    if shard not in SHARD_TO_PATH:
+        raise ValueError(f"Unknown shard '{shard}'. Choose from: {sorted(SHARD_TO_PATH)}")
+    mv_vecs = _embed_query_tokens(query, shard).tolist()
     gql = (
         "{ Get { Claim("
-        f"nearVector: {{vector: {dense_vec}}}, limit: {int(limit)}"
+        f"nearVector: {{vector: {mv_vecs}, targetVectors: [\"colbert\"]}}, limit: {int(limit)}"
         ") { claim_id doc_id claim_type text _additional { id distance } } } }"
     )
     data = _post_graphql(gql)
@@ -249,12 +255,14 @@ def evaluate(queries_path: Path, qrels_path: Path, shard: str, limit: int, reran
         qrels = {row["query"]: set(row.get("relevant_claim_ids", [])) for row in (json.loads(line) for line in f if line.strip())}
 
     metrics = {"precision@10": [], "recall@10": [], "ndcg@10": [], "mrr@10": []}
-    for row in queries:
+    total_q = len(queries)
+    for i, row in enumerate(queries, start=1):
         q = row.get("query", "")
         if not q:
             continue
+        print(f"[eval] {i}/{total_q} retrieving + reranking")
         rel = qrels.get(q, set())
-        hits = retrieve_claims(q, limit=limit)
+        hits = retrieve_claims(q, limit=limit, shard=shard)
         ranked = rerank_with_lmdb(hits, q, shard=shard, rerank_k=rerank_k)
         ranked_ids = [h.claim_id for h in ranked]
         metrics["precision@10"].append(precision_at_k(ranked_ids, rel, 10))
@@ -304,7 +312,7 @@ def main():
     if not args.query:
         raise SystemExit("Provide --query, or --doc-id, or (--queries and --qrels).")
 
-    hits = retrieve_claims(args.query, limit=args.limit)
+    hits = retrieve_claims(args.query, limit=args.limit, shard=args.shard)
     reranked = rerank_with_lmdb(hits, args.query, shard=args.shard, rerank_k=args.rerank_k)
     print(f"Retrieved {len(hits)} hits; reranked top {args.rerank_k} using shard={args.shard}")
     _print_hits(reranked, k=10)
@@ -312,4 +320,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

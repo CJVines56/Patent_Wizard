@@ -15,7 +15,7 @@ dependencies = [
     "ijson (>=3.4.0,<4.0.0)",
     "colbert-ai @ git+https://github.com/stanford-futuredata/ColBERT.git",
     "faiss-cpu (>=1.12.0,<2.0.0)",
-    "weaviate-client (>=4.17.0,<5.0.0)",
+    "weaviate-client (>=4.19.2,<5.0.0)",
     "transformers (>=4.57.1,<5.0.0)",
     "pillow (>=12.0.0,<13.0.0)",
     "matplotlib (>=3.10.7,<4.0.0)",
