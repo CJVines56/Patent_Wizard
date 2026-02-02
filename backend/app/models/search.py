@@ -5,6 +5,13 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 
+class SearchItem(BaseModel):
+    id: int
+    title: str
+    snippet: str
+    search_text: Optional[str] = None
+
+
 class SearchResponse(BaseModel):
     query: str
     total: int

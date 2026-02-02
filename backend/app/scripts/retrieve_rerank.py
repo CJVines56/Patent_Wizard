@@ -266,7 +266,8 @@ def mrr_at_k(ranked_ids: list[str], relevant: set[str], k: int) -> float:
 def evaluate(
     queries_path: Path,
     qrels_path: Path,
-    shard: str,
+    retrieve_shard: str,
+    rerank_shard: str,
     limit: int,
     rerank_k: int,
     *,
@@ -306,8 +307,8 @@ def evaluate(
             continue
         print(f"[eval] {i}/{total_q} retrieving + reranking")
         rel = qrels.get(q, set())
-        hits = retrieve_claims(q, limit=limit, shard=shard)
-        ranked = rerank_with_lmdb(hits, q, shard=shard, rerank_k=rerank_k)
+        hits = retrieve_claims(q, limit=limit, shard=retrieve_shard)
+        ranked = rerank_with_lmdb(hits, q, shard=rerank_shard, rerank_k=rerank_k)
         ranked_ids = [h.claim_id for h in ranked]
         metrics["precision@10"].append(precision_at_k(ranked_ids, rel, 10))
         metrics["recall@10"].append(recall_at_k(ranked_ids, rel, 10))
@@ -353,7 +354,14 @@ def main():
     parser.add_argument("--save-after-csv", type=Path, default=None, help="Save reranked top-k to CSV.")
     parser.add_argument("--save-k", type=int, default=10, help="How many rows to write to CSV outputs.")
     parser.add_argument(
-        "--shard",
+        "--retrieve-shard",
+        type=str,
+        default=os.environ.get("WEAVIATE_SHARD", "768_f16"),
+        choices=sorted(SHARD_TO_PATH.keys()),
+        help="Which shard to use for Weaviate retrieval (must match index dimension).",
+    )
+    parser.add_argument(
+        "--rerank-shard",
         type=str,
         default=os.environ.get("COLBERT_SHARD", "768_f16"),
         choices=sorted(SHARD_TO_PATH.keys()),
@@ -381,7 +389,8 @@ def main():
         scores = evaluate(
             args.queries,
             args.qrels,
-            shard=args.shard,
+            retrieve_shard=args.retrieve_shard,
+            rerank_shard=args.rerank_shard,
             limit=args.limit,
             rerank_k=args.rerank_k,
             filter_missing_qrels=args.filter_missing_qrels,
@@ -406,9 +415,12 @@ def main():
     if not args.query:
         raise SystemExit("Provide --query, or --doc-id, or (--queries and --qrels).")
 
-    hits = retrieve_claims(args.query, limit=args.limit, shard=args.shard)
-    reranked = rerank_with_lmdb(hits, args.query, shard=args.shard, rerank_k=args.rerank_k)
-    print(f"Retrieved {len(hits)} hits; reranked top {args.rerank_k} using shard={args.shard}")
+    hits = retrieve_claims(args.query, limit=args.limit, shard=args.retrieve_shard)
+    reranked = rerank_with_lmdb(hits, args.query, shard=args.rerank_shard, rerank_k=args.rerank_k)
+    print(
+        f"Retrieved {len(hits)} hits; reranked top {args.rerank_k} "
+        f"using retrieve_shard={args.retrieve_shard} rerank_shard={args.rerank_shard}"
+    )
     _print_hits(reranked, k=10)
     if args.save_before_csv:
         _write_hits_csv(hits, args.save_before_csv, k=max(1, args.save_k))
