@@ -4,6 +4,7 @@ Outputs a PNG chart with a mean line.
 """
 from collections import Counter
 from pathlib import Path
+import os
 import re
 
 import matplotlib.pyplot as plt
@@ -45,21 +46,37 @@ def main():
         raise RuntimeError("No Claim objects found in Weaviate.")
     mean_val = sum(counts) / len(counts)
     max_val = max(counts)
+    split_limit = int(os.environ.get("SPLIT_TOKEN_LIMIT", "350"))
+    over_limit = sum(1 for c in counts if c > split_limit)
+    over_pct = (over_limit / len(counts)) * 100.0 if counts else 0.0
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    plt.figure(figsize=(10, 6))
-    plt.hist(counts, bins=40, color="#10B981", alpha=0.9, edgecolor="white")
-    plt.axvline(mean_val, color="#EF4444", linewidth=2, linestyle="--", label=f"Mean = {mean_val:.1f}")
-    plt.title("Tokens per Claim (Histogram)")
-    plt.xlabel("Number of Tokens per Claim")
-    plt.ylabel("Number of Claims")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(OUT_PATH, dpi=150)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.hist(counts, bins=40, color="#10B981", alpha=0.9, edgecolor="white")
+    ax.axvline(mean_val, color="#EF4444", linewidth=2, linestyle="--", label=f"Mean = {mean_val:.1f}")
+    ax.set_title("Tokens per Claim (Histogram)")
+    ax.set_xlabel("Number of Tokens per Claim")
+    ax.set_ylabel("Number of Claims")
+    ax.legend()
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    ax.text(
+        0.98,
+        0.95,
+        f"Over split limit ({split_limit}): {over_limit} / {len(counts)}\n({over_pct:.2f}% chunked)",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#D1D5DB"),
+    )
+
+    fig.tight_layout()
+    fig.savefig(OUT_PATH, dpi=150)
     print(f"Wrote {OUT_PATH} (max_tokens={max_val})")
 
 
 if __name__ == "__main__":
     main()
-

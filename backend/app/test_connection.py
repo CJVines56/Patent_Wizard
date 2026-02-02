@@ -8,6 +8,7 @@ Utility script for ingest/export workflows.
 import os
 import json
 import gzip
+import time
 from pathlib import Path
 
 from embed import (
@@ -22,6 +23,7 @@ from services.download import bulk_dataset_download, output_file as DOWNLOAD_DIR
 
 EXPORT_PATH = Path(os.environ.get("EMBED_EXPORT_PATH", DOWNLOAD_DIR / "chunks_with_vectors.jsonl.gz"))
 STATS_EVERY_BATCHES = int(os.environ.get("STATS_EVERY_BATCHES", "5"))
+EST_TOTAL_BATCHES = int(os.environ.get("EST_TOTAL_BATCHES", "0"))
 LMDB_VECTOR_DTYPE = os.environ.get(
     "TOKEN_VECTOR_DTYPE",
     os.environ.get("LMDB_VECTOR_DTYPE", "float16"),
@@ -37,6 +39,7 @@ class _IngestStats:
         self.total_vectors = 0
         self.total_bytes = 0
         self.dim = None
+        self.total_batch_seconds = 0.0
 
     def update(self, embedded: list[dict]):
         self.batches += 1
@@ -60,11 +63,21 @@ class _IngestStats:
             self.total_vectors += 1
             self.total_bytes += tok * (self.dim or 0) * _BYTES_PER_FLOAT
 
-    def maybe_log(self):
+    def maybe_log(self, batch_seconds: float):
         if STATS_EVERY_BATCHES <= 0:
             return
         if self.batches % STATS_EVERY_BATCHES != 0:
             return
+        self.total_batch_seconds += batch_seconds
+        avg_batch_seconds = self.total_batch_seconds / self.batches if self.batches else 0.0
+        eta = ""
+        if EST_TOTAL_BATCHES > 0 and self.batches > 0:
+            remaining = max(EST_TOTAL_BATCHES - self.batches, 0)
+            eta_seconds = int(remaining * avg_batch_seconds)
+            eta_h = eta_seconds // 3600
+            eta_m = (eta_seconds % 3600) // 60
+            eta_s = eta_seconds % 60
+            eta = f" eta~{eta_h}h {eta_m}m {eta_s}s"
         avg_tokens = (self.total_tokens / self.total_vectors) if self.total_vectors else 0
         avg_bytes = (self.total_bytes / self.total_vectors) if self.total_vectors else 0
         gb = self.total_bytes / (1024 ** 3)
@@ -72,7 +85,7 @@ class _IngestStats:
             f"[stats] batches={self.batches} chunks={self.total_chunks} "
             f"avg_tokens={avg_tokens:.1f} avg_vec_bytes={avg_bytes:,.0f} "
             f"dim={self.dim or 0} dtype={LMDB_VECTOR_DTYPE} "
-            f"est_lmdb_gb={gb:.2f}"
+            f"est_lmdb_gb={gb:.2f} avg_batch_s={avg_batch_seconds:.1f}{eta}"
         )
 
 
@@ -162,6 +175,7 @@ def real_ingest(
     export_handle = None
     export_target = None
     stats = _IngestStats()
+    start_time = time.perf_counter()
 
     if export_path:
         export_target = Path(export_path)
@@ -175,11 +189,16 @@ def real_ingest(
         nonlocal preview_remaining, total_embedded
         if not batch:
             return
+        batch_start = time.perf_counter()
         embedded = embed_chunks(batch, tokenizer, model)
+        batch_seconds = time.perf_counter() - batch_start
         total_embedded += len(embedded)
-        print(f"[ingest] Embedded batch of {len(embedded)} chunks (total {total_embedded})")
+        print(
+            f"[ingest] Embedded batch of {len(embedded)} chunks "
+            f"(total {total_embedded}) in {batch_seconds:.1f}s"
+        )
         stats.update(embedded)
-        stats.maybe_log()
+        stats.maybe_log(batch_seconds)
 
         if preview_remaining > 0:
             to_show = min(preview_remaining, len(embedded))
@@ -208,7 +227,7 @@ def real_ingest(
                 DOWNLOAD_DIR,
                 use_manifest=False,
                 sample_k=0,
-                max_patents=1000,
+                max_patents=None,
                 return_chunks=False,
                 batch_size=ingest_batch_size,
                 on_batch=_record_batch,
@@ -219,10 +238,15 @@ def real_ingest(
                 DOWNLOAD_DIR,
                 use_manifest=False,
                 sample_k=0,
-                max_patents=1000,
+                max_patents=None,
             )
             _record_batch(chunks)
     finally:
+        elapsed = time.perf_counter() - start_time
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        seconds = int(elapsed % 60)
+        print(f"[timing] Total ingest+embed time: {hours}h {minutes}m {seconds}s")
         if export_handle:
             export_handle.close()
             print(f"[export] Saved embeddings to {export_target}")
@@ -235,9 +259,8 @@ def import_exported_embeddings(path: Path | None = None, batch_size: int = 128):
 
 
 if __name__ == "__main__":
-    # Optional: to clear and replace everything, set DROP_FIRST to True,
-    # then run this script once. It deletes the entire PatentData class.
-    DROP_FIRST = True
+    # Optional: to clear and replace everything, set DROP_FIRST=1 and run once.
+    DROP_FIRST = os.environ.get("DROP_FIRST", "0").strip() in {"1", "true", "True", "yes", "YES"}
     if DROP_FIRST:
         from store import get_client
         c = get_client()

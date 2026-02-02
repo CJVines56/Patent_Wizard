@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from .api.search import router as search_router
+from .api.eval import router as eval_router
 import logging
 from starlette.responses import Response
 import time
@@ -23,6 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(search_router)
+app.include_router(eval_router)
 '''
 @app.middleware("http")
 async def request_logger(request: Request, call_next):

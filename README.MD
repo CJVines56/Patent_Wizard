@@ -23,6 +23,58 @@ API Docs: http://127.0.0.1:8000/docs
 
 Health Check: http://127.0.0.1:8000/healthz
 
+## Qrels evaluation API (TailScale)
+This endpoint lets a teammate upload qrels/queries and run the rerank eval remotely.
+
+Server setup (on your machine):
+```powershell
+$env:QRELS_API_KEY="WWg5_F3HfC0CXYUu8fVezCLn-eSSBO76ZIUefuh2rXg"
+uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+```
+
+Your TailScale IP:
+```
+100.103.151.117
+```
+
+Endpoint:
+```
+POST http://100.103.151.117:8000/api/qrels-eval
+Header: X-API-Key: (the API key above)
+```
+
+Request (PowerShell on your friend's machine):
+```powershell
+$apiKey = "WWg5_F3HfC0CXYUu8fVezCLn-eSSBO76ZIUefuh2rXg"
+$uri = "http://100.103.151.117:8000/api/qrels-eval"
+
+Invoke-RestMethod -Uri $uri -Method Post -Headers @{ "X-API-Key" = $apiKey } `
+  -Form @{
+    qrels = Get-Item "C:\path\to\qrels.jsonl"
+    # queries = Get-Item "C:\path\to\queries.jsonl"  # optional, will be derived if omitted
+    shard = "768_f16"
+    limit = 200
+    rerank_k = 100
+    filter_missing_qrels = "true"
+  }
+```
+
+Request (curl):
+```bash
+curl -X POST "http://100.103.151.117:8000/api/qrels-eval" \
+  -H "X-API-Key: WWg5_F3HfC0CXYUu8fVezCLn-eSSBO76ZIUefuh2rXg" \
+  -F "qrels=@/path/to/qrels.jsonl" \
+  -F "queries=@/path/to/queries.jsonl" \
+  -F "shard=768_f16" \
+  -F "limit=200" \
+  -F "rerank_k=100" \
+  -F "filter_missing_qrels=true"
+```
+
+Response includes:
+- `metrics` JSON (precision/recall/ndcg/mrr)
+- `metrics_csv` string (ready to save as a CSV file)
+
 ### 1) Health check
 ```bash
 curl "http://localhost:8000/healthz"
@@ -182,6 +234,13 @@ Troubleshooting Docker
 - If you see `dockerDesktopLinuxEngine` pipe errors, Docker Desktop isn’t running. Open Docker Desktop and wait for “Docker Engine running”.
 - Run `docker info` in a new terminal to confirm the engine is up before `docker compose up -d`.
 
+## Use cases
+- Search patents by claim text and retrieve the most semantically similar claims.
+- Rerank Weaviate results with ColBERT MaxSim for higher precision.
+- Compare reranked vs. raw retrieval results (export to CSV for side-by-side review).
+- Build evaluation runs from queries/qrels JSONL to track relevance metrics.
+- Export or share LMDB shards + Weaviate data for team collaboration and offline analysis.
+
 ## Step-by-step: correct model + ingest + retrieval
 Use the same 768-dim ColBERT model for both ingest and query-time retrieval.
 
@@ -236,7 +295,7 @@ setx INGEST_MODE "real-store"
 $env:TOKEN_VECTOR_DIM="768"          # primary variant for emb["colbert"] (768 or 128)
 $env:TOKEN_VECTOR_DTYPE="float16"    # primary dtype for emb["colbert"]
 $env:USE_TOKEN_PROJECTION="1"        # required when TOKEN_VECTOR_DIM=128
-$env:COLBERT_VARIANTS="768_f32,768_f16,128_f32,128_f16"
+$env:COLBERT_VARIANTS="768_f32,768_f16,128_f32,128_f16"  # controls which LMDB shards are created
 $env:COLBERT_MODEL_NAME="colbert-ir/colbertv2.0"  # keep ingest/query dimensions aligned (768)
 $env:MODEL_NAME=$env:COLBERT_MODEL_NAME
 $env:WRITE_LMDB="1"                  # set to "0" to skip LMDB shard writes
@@ -248,6 +307,14 @@ $env:LMDB_PATH_768_F16="backend/lmdb/colbert_768_f16.lmdb"
 $env:LMDB_PATH_128_F32="backend/lmdb/colbert_128_f32.lmdb"
 $env:LMDB_PATH_128_F16="backend/lmdb/colbert_128_f16.lmdb"
 ```
+
+Storage impact notes (dtype + dimensionality)
+- float32 → float16: ~2× smaller (supported)
+- 768 → 128 dims: ~6× smaller
+- 768_f32 → 128_f16: ~12× smaller overall
+- 768_f16 → 128_f16: ~6× smaller overall
+
+We create multiple ColBERT variants to compare size/quality tradeoffs. Anything beyond these (e.g., int8/4‑bit) would require additional quantization not implemented here.
 
 ## Weaviate search (Claim collection)
 Example GraphQL nearVector search using the dense query vector:
@@ -273,6 +340,16 @@ from backend.app.store import load_colbert_from_lmdb
 # claim_uuid is the Weaviate Claim object UUID
 vecs = load_colbert_from_lmdb("backend/lmdb/colbert_768_f16.lmdb", claim_uuid)
 print(vecs.shape, vecs.dtype)  # [tokens, dim]
+```
+
+## Compact LMDB (reclaim unused map size)
+LMDB does not shrink in place. Use the compact script to rewrite shards to their actual size:
+```powershell
+poetry run python backend/app/scripts/compact_lmdb.py --shard 768_f16
+```
+Or compact all shards:
+```powershell
+poetry run python backend/app/scripts/compact_lmdb.py --all
 ```
 
 ## Retrieval + reranking (with shard selection)

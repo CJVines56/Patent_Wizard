@@ -9,6 +9,7 @@ Minimal retrieval + ColBERT-style reranking utilities.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -204,6 +205,20 @@ def lookup_patent(doc_id: str, limit: int = 200) -> list[ClaimHit]:
     return hits
 
 
+def _claim_id_exists(claim_id: str) -> bool:
+    where = (
+        "{path:[\"claim_id\"],operator:Equal,valueText:"
+        f"\"{claim_id}\"}}"
+    )
+    gql = (
+        "{ Get { Claim("
+        f"where:{where}, limit:1"
+        ") { claim_id } } }"
+    )
+    data = _post_graphql(gql)
+    return bool(data.get("Get", {}).get("Claim"))
+
+
 def precision_at_k(ranked_ids: list[str], relevant: set[str], k: int) -> float:
     if k <= 0:
         return 0.0
@@ -248,7 +263,15 @@ def mrr_at_k(ranked_ids: list[str], relevant: set[str], k: int) -> float:
     return 0.0
 
 
-def evaluate(queries_path: Path, qrels_path: Path, shard: str, limit: int, rerank_k: int) -> dict:
+def evaluate(
+    queries_path: Path,
+    qrels_path: Path,
+    shard: str,
+    limit: int,
+    rerank_k: int,
+    *,
+    filter_missing_qrels: bool = True,
+) -> dict:
     with queries_path.open("r", encoding="utf-8") as f:
         queries = [json.loads(line) for line in f if line.strip()]
     with qrels_path.open("r", encoding="utf-8") as f:
@@ -256,6 +279,27 @@ def evaluate(queries_path: Path, qrels_path: Path, shard: str, limit: int, reran
 
     metrics = {"precision@10": [], "recall@10": [], "ndcg@10": [], "mrr@10": []}
     total_q = len(queries)
+    if filter_missing_qrels:
+        cache: dict[str, bool] = {}
+        filtered = []
+        dropped = 0
+        for row in queries:
+            q = row.get("query", "")
+            rel = qrels.get(q, set())
+            keep = False
+            for claim_id in rel:
+                if claim_id not in cache:
+                    cache[claim_id] = _claim_id_exists(claim_id)
+                if cache[claim_id]:
+                    keep = True
+                    break
+            if keep:
+                filtered.append(row)
+            else:
+                dropped += 1
+        queries = filtered
+        total_q = len(queries)
+        print(f"[eval] filtered {dropped} query(ies) with no relevant claims in index")
     for i, row in enumerate(queries, start=1):
         q = row.get("query", "")
         if not q:
@@ -281,11 +325,33 @@ def _print_hits(hits: list[ClaimHit], k: int = 10):
         print(f"    {h.text[:200]}")
 
 
+def _write_hits_csv(hits: list[ClaimHit], path: Path, k: int = 10):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["rank", "score", "distance", "claim_id", "doc_id", "claim_type", "text"])
+        for i, h in enumerate(hits[:k], start=1):
+            writer.writerow(
+                [
+                    i,
+                    "" if h.score is None else f"{h.score:.6f}",
+                    "" if h.distance is None else f"{h.distance:.6f}",
+                    h.claim_id,
+                    h.doc_id,
+                    h.claim_type,
+                    h.text,
+                ]
+            )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Retrieve + rerank claims with shard selection.")
     parser.add_argument("--query", type=str, default="", help="Query text for retrieval.")
     parser.add_argument("--limit", type=int, default=200, help="Initial retrieval limit.")
     parser.add_argument("--rerank-k", type=int, default=100, help="How many initial hits to rerank.")
+    parser.add_argument("--save-before-csv", type=Path, default=None, help="Save pre-rerank top-k to CSV.")
+    parser.add_argument("--save-after-csv", type=Path, default=None, help="Save reranked top-k to CSV.")
+    parser.add_argument("--save-k", type=int, default=10, help="How many rows to write to CSV outputs.")
     parser.add_argument(
         "--shard",
         type=str,
@@ -296,6 +362,13 @@ def main():
     parser.add_argument("--doc-id", type=str, default="", help="Lookup claims by patent doc_id.")
     parser.add_argument("--queries", type=Path, default=None, help="Path to JSONL queries for evaluation.")
     parser.add_argument("--qrels", type=Path, default=None, help="Path to JSONL qrels for evaluation.")
+    parser.add_argument("--metrics-csv", type=Path, default=None, help="Write evaluation metrics to CSV.")
+    parser.add_argument(
+        "--filter-missing-qrels",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Drop queries whose relevant claim_ids are not present in Weaviate.",
+    )
     args = parser.parse_args()
 
     if args.doc_id:
@@ -305,8 +378,29 @@ def main():
         return
 
     if args.queries and args.qrels:
-        scores = evaluate(args.queries, args.qrels, shard=args.shard, limit=args.limit, rerank_k=args.rerank_k)
+        scores = evaluate(
+            args.queries,
+            args.qrels,
+            shard=args.shard,
+            limit=args.limit,
+            rerank_k=args.rerank_k,
+            filter_missing_qrels=args.filter_missing_qrels,
+        )
         print(json.dumps(scores, indent=2))
+        if args.metrics_csv:
+            args.metrics_csv.parent.mkdir(parents=True, exist_ok=True)
+            with args.metrics_csv.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["precision@10", "recall@10", "ndcg@10", "mrr@10"])
+                writer.writerow(
+                    [
+                        scores.get("precision@10", 0.0),
+                        scores.get("recall@10", 0.0),
+                        scores.get("ndcg@10", 0.0),
+                        scores.get("mrr@10", 0.0),
+                    ]
+                )
+            print(f"Wrote metrics to {args.metrics_csv}")
         return
 
     if not args.query:
@@ -316,6 +410,12 @@ def main():
     reranked = rerank_with_lmdb(hits, args.query, shard=args.shard, rerank_k=args.rerank_k)
     print(f"Retrieved {len(hits)} hits; reranked top {args.rerank_k} using shard={args.shard}")
     _print_hits(reranked, k=10)
+    if args.save_before_csv:
+        _write_hits_csv(hits, args.save_before_csv, k=max(1, args.save_k))
+        print(f"Saved pre-rerank results to {args.save_before_csv}")
+    if args.save_after_csv:
+        _write_hits_csv(reranked, args.save_after_csv, k=max(1, args.save_k))
+        print(f"Saved reranked results to {args.save_after_csv}")
 
 
 if __name__ == "__main__":
