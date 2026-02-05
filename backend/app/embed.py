@@ -96,12 +96,21 @@ def _variant_enabled(name: str) -> bool:
     return name in enabled
 
 
-def _build_token_variants(token_vectors: torch.Tensor) -> dict[str, "np.ndarray"]:
-    variants: dict[str, "np.ndarray"] = {}
+def _build_token_variants(token_vectors: torch.Tensor) -> dict[str, object]:
+    variants: dict[str, object] = {}
     if _variant_enabled("768_f32"):
         variants["768_f32"] = token_vectors.to(torch.float32).detach().cpu().numpy()
     if _variant_enabled("768_f16"):
         variants["768_f16"] = token_vectors.to(torch.float16).detach().cpu().numpy()
+    if _variant_enabled("768_i8"):
+        max_abs = token_vectors.abs().max(dim=1, keepdim=True).values
+        scale = max_abs / 127.0
+        scale = torch.where(scale == 0, torch.ones_like(scale), scale)
+        q = torch.clamp((token_vectors / scale).round(), -127, 127).to(torch.int8)
+        variants["768_i8"] = {
+            "data": q.detach().cpu().numpy(),
+            "scale": scale.detach().cpu().numpy().astype("float32"),
+        }
     if _variant_enabled("128_f32") or _variant_enabled("128_f16"):
         proj = _get_token_projection()
         if proj is None:

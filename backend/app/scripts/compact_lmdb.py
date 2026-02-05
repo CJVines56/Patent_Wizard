@@ -5,6 +5,7 @@ This keeps existing paths the same so the rest of the code does not change.
 """
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 from pathlib import Path
@@ -16,12 +17,14 @@ from backend.app.store import (
     LMDB_PATH_128_F32,
     LMDB_PATH_768_F16,
     LMDB_PATH_768_F32,
+    LMDB_PATH_768_I8,
 )
 
 
 SHARDS = {
     "768_f32": LMDB_PATH_768_F32,
     "768_f16": LMDB_PATH_768_F16,
+    "768_i8": LMDB_PATH_768_I8,
     "128_f32": LMDB_PATH_128_F32,
     "128_f16": LMDB_PATH_128_F16,
 }
@@ -93,9 +96,20 @@ def compact_in_place(path: Path):
 
 
 def main():
-    for name, path in SHARDS.items():
-        print(f"\n== {name} ==")
-        compact_in_place(path)
+    parser = argparse.ArgumentParser(description="Compact LMDB shards in place.")
+    parser.add_argument("--shard", type=str, default=None, choices=sorted(SHARDS.keys()))
+    parser.add_argument("--all", action="store_true", help="Compact all shards.")
+    args = parser.parse_args()
+
+    if args.shard:
+        print(f"\n== {args.shard} ==")
+        compact_in_place(SHARDS[args.shard])
+        return
+
+    if args.all or args.shard is None:
+        for name, path in SHARDS.items():
+            print(f"\n== {name} ==")
+            compact_in_place(path)
 
 
 if __name__ == "__main__":

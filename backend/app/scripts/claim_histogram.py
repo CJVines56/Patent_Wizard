@@ -109,29 +109,34 @@ def main():
     ax.set_title(f"Claims per Patent (Histogram, ≤ {trunc_val})")
     ax.set_xlabel("Number of Claims per Patent")
     ax.set_ylabel("Number of Patents")
-    ax.legend()
+    ax.legend(loc="upper left")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # Tail zoom inset (60+ claims per patent)
-    tail_min = 60
+    # Tail zoom inset (45+ claims per patent)
+    tail_min = 45
     tail = [c for c in counts if c >= tail_min]
     if tail and len(tail) >= 5:
-        axins = ax.inset_axes([0.58, 0.52, 0.38, 0.38])
+        axins = ax.inset_axes([0.582, 0.52, 0.38, 0.38])
         axins.hist(tail, bins=20, color="#1D4ED8", alpha=0.9, edgecolor="white")
-        axins.set_title(f"Tail (≥ p90 ≈ {tail_min})", fontsize=9)
+        axins.set_title(f"Tail (≥ {tail_min})", fontsize=9)
         axins.tick_params(labelsize=8)
         axins.spines["top"].set_visible(False)
         axins.spines["right"].set_visible(False)
-        ax.indicate_inset_zoom(axins, edgecolor="#111827")
+        try:
+            from mpl_toolkits.axes_grid1.inset_locator import mark_inset
+            _, con1, con2 = mark_inset(ax, axins, loc1=3, loc2=2, fc="none", ec="#111827")
+            con2.set_visible(False)
+        except Exception:
+            pass
 
     ax.text(
-        0.98,
-        0.95,
+        0.02,
+        0.92,
         f"p50={percentiles['p50']:.0f}  p90={percentiles['p90']:.0f}\n"
         f"p95={percentiles['p95']:.0f}  p99={percentiles['p99']:.0f}",
         transform=ax.transAxes,
-        ha="right",
+        ha="left",
         va="top",
         fontsize=9,
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#D1D5DB"),

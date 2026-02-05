@@ -295,7 +295,7 @@ setx INGEST_MODE "real-store"
 $env:TOKEN_VECTOR_DIM="768"          # primary variant for emb["colbert"] (768 or 128)
 $env:TOKEN_VECTOR_DTYPE="float16"    # primary dtype for emb["colbert"]
 $env:USE_TOKEN_PROJECTION="1"        # required when TOKEN_VECTOR_DIM=128
-$env:COLBERT_VARIANTS="768_f32,768_f16,128_f32,128_f16"  # controls which LMDB shards are created
+$env:COLBERT_VARIANTS="768_f32,768_f16,768_i8,128_f32,128_f16"  # controls which LMDB shards are created
 $env:COLBERT_MODEL_NAME="colbert-ir/colbertv2.0"  # keep ingest/query dimensions aligned (768)
 $env:MODEL_NAME=$env:COLBERT_MODEL_NAME
 $env:WRITE_LMDB="1"                  # set to "0" to skip LMDB shard writes
@@ -304,12 +304,14 @@ $env:LMDB_MAP_GROW_GB="10"
 $env:LMDB_MAP_SIZE="21474836480"
 $env:LMDB_PATH_768_F32="backend/lmdb/colbert_768_f32.lmdb"
 $env:LMDB_PATH_768_F16="backend/lmdb/colbert_768_f16.lmdb"
+$env:LMDB_PATH_768_I8="backend/lmdb/colbert_768_i8.lmdb"
 $env:LMDB_PATH_128_F32="backend/lmdb/colbert_128_f32.lmdb"
 $env:LMDB_PATH_128_F16="backend/lmdb/colbert_128_f16.lmdb"
 ```
 
 Storage impact notes (dtype + dimensionality)
 - float32 → float16: ~2× smaller (supported)
+- float32 → int8: ~4× smaller (supported as 768_i8)
 - 768 → 128 dims: ~6× smaller
 - 768_f32 → 128_f16: ~12× smaller overall
 - 768_f16 → 128_f16: ~6× smaller overall

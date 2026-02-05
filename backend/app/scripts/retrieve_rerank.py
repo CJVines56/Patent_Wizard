@@ -23,6 +23,7 @@ import requests
 from backend.app.embed import _get_token_projection, model, tokenizer
 from backend.app.services.download import rich_to_plain
 from backend.app.store import (
+    LMDB_PATH_768_I8,
     LMDB_PATH_128_F16,
     LMDB_PATH_128_F32,
     LMDB_PATH_768_F16,
@@ -38,6 +39,7 @@ WEAVIATE_OBJECTS = os.environ.get("WEAVIATE_OBJECTS", "http://localhost:8080/v1/
 SHARD_TO_PATH = {
     "768_f32": LMDB_PATH_768_F32,
     "768_f16": LMDB_PATH_768_F16,
+    "768_i8": LMDB_PATH_768_I8,
     "128_f32": LMDB_PATH_128_F32,
     "128_f16": LMDB_PATH_128_F16,
 }

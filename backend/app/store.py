@@ -24,6 +24,7 @@ _LMDB_DIR = Path(__file__).resolve().parents[1] / "lmdb"
 LMDB_PATH = Path(os.environ.get("LMDB_PATH", _LMDB_DIR / "colbert_vectors.lmdb"))
 LMDB_PATH_768_F32 = Path(os.environ.get("LMDB_PATH_768_F32", _LMDB_DIR / "colbert_768_f32.lmdb"))
 LMDB_PATH_768_F16 = Path(os.environ.get("LMDB_PATH_768_F16", _LMDB_DIR / "colbert_768_f16.lmdb"))
+LMDB_PATH_768_I8 = Path(os.environ.get("LMDB_PATH_768_I8", _LMDB_DIR / "colbert_768_i8.lmdb"))
 LMDB_PATH_128_F32 = Path(os.environ.get("LMDB_PATH_128_F32", _LMDB_DIR / "colbert_128_f32.lmdb"))
 LMDB_PATH_128_F16 = Path(os.environ.get("LMDB_PATH_128_F16", _LMDB_DIR / "colbert_128_f16.lmdb"))
 LMDB_MAP_SIZE = int(os.environ.get("LMDB_MAP_SIZE", str(10 * 1024**3)))
@@ -38,6 +39,7 @@ WRITE_LMDB = os.environ.get("WRITE_LMDB", "1").strip() not in {"0", "false", "Fa
 LMDB_VARIANT_PATHS = {
     "768_f32": LMDB_PATH_768_F32,
     "768_f16": LMDB_PATH_768_F16,
+    "768_i8": LMDB_PATH_768_I8,
     "128_f32": LMDB_PATH_128_F32,
     "128_f16": LMDB_PATH_128_F16,
 }
@@ -57,15 +59,24 @@ def _open_lmdb_env(path: Path, *, readonly: bool = False) -> lmdb.Environment:
     )
 
 def _serialize_colbert(vectors) -> bytes:
-    arr = np.asarray(vectors)
     buffer = io.BytesIO()
-    np.save(buffer, arr, allow_pickle=False)
+    if isinstance(vectors, dict) and "data" in vectors and "scale" in vectors:
+        np.savez(buffer, data=vectors["data"], scale=vectors["scale"])
+    else:
+        arr = np.asarray(vectors)
+        np.save(buffer, arr, allow_pickle=False)
     return buffer.getvalue()
 
 
 def _deserialize_colbert(payload: bytes) -> np.ndarray:
     buffer = io.BytesIO(payload)
-    return np.load(buffer, allow_pickle=False)
+    obj = np.load(buffer, allow_pickle=False)
+    if isinstance(obj, np.lib.npyio.NpzFile):
+        data = obj["data"]
+        scale = obj["scale"]
+        obj.close()
+        return data.astype(np.float32) * scale
+    return obj
 
 
 def _write_lmdb_vectors(
