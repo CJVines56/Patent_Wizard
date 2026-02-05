@@ -1,0 +1,51 @@
+index,doc_id,title,filing_date,classification,authors,abstract_chunks,description_chunks,claim_chunks,sequence_metadata_chunks,sequence_summary_chunks
+1,12402636,Meat processing assembly,20220920,A22C 17/002,Phil Bifulco,1,72,9,0,0
+2,12403596,Imaging process for detecting failures modes,20240703,B25J 9/1653,Yide Shentu; David Mascharka; Tianhao Zhang; Yan Duan; Jasmine Deng; Xi Chen,1,79,20,0,0
+3,12405220,Chromatographic reader devices for biodetection,20210818,G01N 21/77,Antonia E. Schaefer; Nicholas T. Gabriel; Samuel J. Fahey; Adam C. Nyland; Thaine W. Fuller; John M. Kruse; Nicholas G. Amell; Glendon D. Kappel; Patrick A. Mach,1,159,6,0,0
+4,12404805,Combined cycle power generation facility,20241230,F02C 6/18,Tomomi Okuyama; Hideaki Shimada; Masao Itoh; Yuichi Morisawa; Hiroki Kasuya; Ryu Hirayama; Kojiro Tada,1,87,6,0,0
+5,12405102,Super-sensitive capacitive strain sensor with electrode fragmentation,20210323,G01B 7/22,Gilles Lubineau; Hussein Nesser,1,65,21,0,0
+6,12403362,Systems and methods for additive manufacturing of a golf club,20230324,A63B 53/04,Ryan L. Roach; Cameron J. Day; Bryce W. Hobbs,1,241,17,0,0
+7,12407255,Switching power supply circuit and switching power supply system having the same,20230807,H02M 3/158,Saiki Shigemori; Akihiro Unno,1,37,6,0,0
+8,12402867,Hemostatic biopsy tract article,20190215,A61B 10/0275,Hiep Do; Jordan Addison,1,60,15,0,0
+9,D1091231,Cook tool,20231031,0704,Nicole Wyss; Valeria Hiltenbrand; David Schäublin; Stefan Thomet; Jochen Schaepers,0,9,1,0,0
+10,12403330,Boron neutron capture therapy system,20250520,A61N 5/1077,Sheng Wang; Yaocheng Hu; Jingjing Fan; Yupeng Xie; Dongxu Yang,1,88,20,0,0
+11,12406085,Segmentation of data in hybrid cloud,20220131,G06F 21/6245,Shailendra Moyal; Sarbajit K. Rakshit; Venkata Vara Prasad Karri,1,78,20,0,0
+12,D1091558,Mount head and monitor arm including the same,20241017,1402,Fabian Monsalve; Ross Velazquez; Jacob Glickstein,0,9,1,0,0
+13,12403672,"Laminate, adhesive kit, laminated structure and production method thereof, and contact adhesive composition",20220310,B32B 7/12,Hidetoshi Abe; Yuji Kashiwazaki; Mamoru Kanno,1,97,14,0,0
+14,12407392,Precoding and feedback channel information in wireless communication system,20240415,H04B 7/065,Jianjun Li; Kyoungmin Park,1,61,15,0,0
+15,12404418,Scenario-adaptable color-changing ink and solar glass product,20220106,C09D 11/50,Ping He,1,96,6,0,0
+16,12407629,Efficient parallelized computation of a Benes network configuration,20240505,H04L 49/254,Ioannis (Giannis) Patronas; Paraskevas Bakopoulos; Eitan Zahavi; Eran Aharon; Elad Mentovich,1,108,18,0,0
+17,12405337,System and method for measuring eddy currents with long time constants using a pseudo-continuous acquisition,20231005,G01R 33/58,Richard Scott Hinks; Andreas Ebel; Hua Li,1,81,20,0,0
+18,12408099,Connection change restriction in overlapping area of terrestrial network and non-terrestrial network,20211109,H04W 48/04,Tsunehiko Chiba; Kenichiro Aoyagi,1,96,9,0,0
+19,12403731,Tire valve,20210915,B60C 23/0494,Takumi Sugino,1,71,20,0,0
+20,D1091741,Climbing frame,20250106,2103,Qiuhong Jiang,0,12,1,0,0
+21,12407800,Projector arrangement for a vehicle,20220808,H04N 9/3173,María Fernanda Mohar Castillo; Ligia Olivares Espinosa; Emiliano Reyes Pardo; Gabriel Pérez Trueba,1,42,20,0,0
+22,12402683,Helmet,20220406,A42B 3/328,Man Gyu Sang; Hyoung Wook Im,1,71,10,0,0
+23,12407647,Local controller for local API authorization method and apparatus,20240603,H04L 63/02,Teemu Koponen; Timothy L. Hinrichs; Torin Sandall; Stan Lagun,1,152,20,0,0
+24,12403833,Vehicle display control device and display control method for processing an image based on a number of lanes detected,20230724,B60R 1/27,Takayuki Suzuki; Akitoshi Yamashita; Masayuki Yanagida,1,226,16,0,0
+25,D1091284,Protective hand grip,20201203,0806,"Clarence Cockerham, II; Pavel Usmanov",0,7,1,0,0
+26,12405249,Systems and methods for monitoring hydraulic systems,20240304,G01N 29/024,Daniel Gysling,1,123,46,0,0
+27,12406038,Systems and methods for location-binding authentication,20210927,G06F 21/31,Gerard K. Cohen; Michelle D. Green; Christopher P. Smith; Craig Stuart; Kenneth L. Wright; Michelle M. Young,1,57,20,0,0
+28,D1091227,Lid,20231122,0702,Zhiqing Wu,0,10,1,0,0
+29,12403049,Storing device and a system for tracking absorption products,20210212,A61F 13/55175,Dusan Plavec; Melita Perko,1,53,14,0,0
+30,12404884,Cyclonic flow-inducing pump,20240510,F15C 1/18,Paul Wayne Schmidt; Avijit Ghosh,1,67,18,0,0
+31,12408176,Communication system,20210730,H04W 72/23,Caroline Liang; Takahiro Sasaki,1,293,8,0,0
+32,12406185,System and method for pruning neural networks at initialization using iteratively conserving synaptic flow,20210715,G06N 3/082,Hidenori Tanaka; Daniel Kunin; Daniel L. K. Yamins; Surya Ganguli,1,115,16,0,0
+33,12405386,Method for adjusting a phase of a carrier replica signal,20230207,G01S 19/29,Carmine D'Alessandro,1,94,19,0,0
+34,12405099,Clamp-on type pipeline measuring devices and fixing structures of the same,20230502,G01B 5/0004,Yuan Hse Chang,1,60,10,0,0
+35,12407266,Electrical system and related methods,20240429,H02M 3/33576,Sumit Dutta; Wei Guo; Pengyuan Chen; Rachit Agarwal,1,100,20,0,0
+36,12405134,"Electronic seal label apparatus, electric motor assembly and electronic seal label verification method",20180628,G01D 5/244,Kai Jiang; Yao Sun,1,46,17,0,0
+37,12405472,Adaptive lens assemblies including polarization-selective lens stacks for augmented reality display,20240402,G02B 27/0172,Ravi Kumar Komanduri; Chulwoo Oh,1,284,19,0,0
+38,12405237,Predicting ceramic colloidal suspension stability for extrusion-based additive manufacturing,20230929,G01N 24/085,Collin C. McClain; Michael P. Hunt,1,84,20,0,0
+39,12406459,Method and system for determining a condition of a geographical line,20210630,G06V 10/25,Sascha Klement; Florian Hartmann; Stefan Matlage,1,99,20,0,0
+40,12403995,Outboard motor,20221102,B63H 20/14,Hiroki Koga; Yoshiyuki Kadobayashi; Akihiro Noma; Kimitaka Saruwatari; Junya Onoue,1,45,18,0,0
+41,12407930,"Image pickup apparatus, camera and mobile electronic device",20230602,H04N 23/687,Kazuo Shikama; Takashi Iwasaki,1,99,13,0,0
+42,12406897,Package structure with buffer layer embedded in lid layer,20240508,H01L 23/3675,Shu-Shen Yeh; Yu-Sheng Lin; Ming-Chih Yew; Po-Yao Lin; Shin-Puu Jeng,1,86,20,0,0
+43,12406745,Memory repair device,20230510,G11C 29/4401,Jun Soo Kwack; Yong Sup Lee,1,111,19,0,0
+44,12404102,Cable-stayed jacking reversing type sixteen-wheel four-way shuttle,20210915,B65G 1/0492,Xiaoming Huang; Yunlong Ma,1,67,10,0,0
+45,12407584,Service level enforcement in distributed system based on subscriptions,20230929,H04L 41/5009,"Dharmesh M. Patel; John A. Lockman, III",1,150,20,0,0
+46,D1091940,Hair straightener,20231221,2803,Peng-Fei Chu,0,9,1,0,0
+47,12407311,Readout circuit for high-precision vibration sensor,20230517,H03F 3/45475,Pengjun Wang; Xiangyu Li; Hao Ye; Gang Li,1,39,1,0,0
+48,12404780,Containment ring for gas turbine engine,20240129,F01D 21/045,Jocelyn Bisson; Jagdeep Singh Jhinger; Guy Lefebvre,1,53,13,0,0
+49,12408277,Component-attached FPC manufacturing method,20240815,H05K 3/341,Hidehiko Shimizu,1,63,5,0,0
+50,12404215,Ceramic susceptor and manufacturing method thereof,20240918,C04B 35/103,Yun Ho Kim; Joo Hwan Kim; Hwan Young Park; Bo Sung Kim; Hyun Taek Lee,1,102,10,0,0
