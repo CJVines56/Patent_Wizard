@@ -1,3 +1,4 @@
+import os
 import warnings
 
 warnings.filterwarnings(
@@ -23,6 +24,7 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 
 from graph import compile_graph
 from langchain_huggingface import HuggingFaceEmbeddings
+from langsmith.run_helpers import trace
 
 load_dotenv()
 
@@ -55,19 +57,26 @@ def run_one_with_graph(app, question: str, app_rpm_budget: int = 60) -> dict:
     time.sleep(60.0 / max(app_rpm_budget, 1))
 
     try:
-        final_state = app.invoke({"messages": [{"role": "user", "content": question}]})
-        answer = final_state["answer"]
-        if isinstance(answer, list):
-            answer = "\n".join(str(x) for x in answer)
-        elif not isinstance(answer, str):
-            answer = str(answer)
-        cleaned_q = final_state["cleaned_query"]
-        metadata = final_state["metadata"]
-        print(metadata)
-        raw_contexts: List[Dict[str, Any]] = final_state.get("contexts") or []
-        contexts: List[str] = [
-            c.get("text", "") for c in raw_contexts if isinstance(c, dict) and c.get("text")
-        ]
+
+        with trace(
+        name="langgraph_app_invoke",
+        inputs={"question": question},
+        project_name=os.getenv("LANGSMITH_PROJECT", "default"),
+    ):
+            
+            final_state = app.invoke({"messages": [{"role": "user", "content": question}]})
+            answer = final_state["answer"]
+            if isinstance(answer, list):
+                answer = "\n".join(str(x) for x in answer)
+            elif not isinstance(answer, str):
+                answer = str(answer)
+            cleaned_q = final_state["cleaned_query"]
+            metadata = final_state["metadata"]
+            print(metadata)
+            raw_contexts: List[Dict[str, Any]] = final_state.get("contexts") or []
+            contexts: List[str] = [
+                c.get("text", "") for c in raw_contexts if isinstance(c, dict) and c.get("text")
+            ]
         return {"question": cleaned_q, "answer": answer, "contexts": contexts, "metadata": metadata}
     except Exception as e:
         print(f"Error running graph for question '{question}': {e}")
@@ -86,7 +95,7 @@ def load_questions(csv_path: str, question_col: str) -> list[str]:
 
 
 if __name__ == "__main__":
-    CSV_PATH = "eval_questions_2.txt"
+    CSV_PATH = "eval_questions_3.txt"
     QUESTION_COL = "unclean_question"
 
     # ---- RAGAS LLM (metrics) ----
