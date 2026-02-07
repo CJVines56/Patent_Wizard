@@ -3,12 +3,12 @@ patents combined cycle power generation facility
 patents data segmentation hybrid cloud
 patent method measuring eddy current
 climbing frame patents
-patents for API authorization controller
+patents controller API authorization
 patent communication system Jianjun Li
 hemostatic biopsy tract patents articles
 earliest file date chromatographic reader device patents
-earliest patent filing date capacitive strain sensor
-earliest patent cooking tool
+earliest filing date US patents capacitive strain sensor
+earliest accessible patent cooking tool
 earliest patent filing date imaging process failure mode detection
 earliest filing date scenario adaptable color changing ink patents
 earliest patent filings vehicle projector arrangement
@@ -17,33 +17,33 @@ Bryce Hobbs patent claims additive manufacturing golf club
 Akihiro Unno patent switching power supply circuit system claims
 Sheng Wang boron neutron capture therapy system patent claims
 Takumi Sugino tire valve patent claims
-Man Gyu Sang helmet patent claims
+man gyu sang helmet patent claims
 Suzuki Yamashita Yanagida patent "vehicle display control device" claims lanes detected
-Daniel Gysling "systems and methods for monitoring hydraulic systems" patent uniqueness
-Paul Wayne Schmidt cyclonic flow inducing pump patent unique features
-Caroline Liang communication system patent claims vs commercial communication systems differences
-Tanaka novel prune neural network patent claims vs Google OpenAI approach differences
-Carmine D'Alessandro unique methods phase carrier replica signal patent
+Daniel Gysling "Systems and methods for monitoring hydraulic systems" patent uniqueness
+Paul Wayne Schmidt cyclonic flow inducing pump patent uniqueness
+Caroline Liang communication system patent claims vs commercial communication systems
+Tanaka novel prune neural network patent claims vs Google OpenAI
+Carmine D'Alessandro methods adjust phase carrier replica signal patent unique features
 Yuan Hse Chang clamp-on pipeline measuring device claims vs Peng-Fei Chu hair straightener claims
-Summit Datta electrical system patent (Apr 2024) vs Kai Jiang Yao Sun patent (June 2018) comparison
+difference Summit Datta electrical system patent April 2024 vs Kai Jiang Yao Sun patent June 2018
 Kai Jiang Yao Sun electronic seal label apparatus patent uniqueness
 adaptive lens assemblies filing date vs Collin McClain ceramic colloidal suspension stability patent filing date
 predicting ceramic colloidal suspension stability patent unique features
 Sascha Klement geographic line claims vs Hiroki Koga outboard motor claims
 Junya Onoue outboard motor patent vs prior art
 Kazuo Shikama Takashi Iwasaki image pickup apparatus camera mobile electronic device patent unique features
-prior art described in patent 'package structure w buffer layer embedded in lid layer'
+prior art "package structure with buffer layer embedded in lid layer" patent
 Jun Soo Kwack Yong Sup Lee memory repair device patent claims vs prior art
-huang/ma cable-stayed jacking reversing type sixteen-wheel four-way shuttle claims vs phil bifulco meat processing assembly claims
+difference between huang/ma cable-stayed jacking reversing type sixteen-wheel four-way shuttle claims and phil bifulco meat processing assembly claims
 Dharmesh Patel John Lockman service level enforcement subscriptions patent uniqueness
-Peng-fei Chu hair straightener patent prior art
+Peng-Fei Chu hair straightener patent prior art
 Pengjun Wang Xiangg Yu Li Hao Ye Gang Li readout circuit high precision vibration sensor claims vs Shigemori Unno 2023 switching power supply circuit claims differences
-compare bisson jhinger lefebvre containment ring gas turbine patent claims vs wyss hiltenbrand schaublin thomet schaepers patent filed oct 31 2023
-Hidehiko Shimizu component-attached FPC manufacturing method patent unique aspects
+bisson jhinger lefebvre containment ring gas turbine patent claims vs wyss hiltenbrand schaublin thomet schaepers patent claims october 31 2023
+Hidehiko Shimizu component-attached FPC manufacturing method patent unique features
 ceramic susceptor manufacturing method patent prior art
 laminate adhesive kit laminated structure patent filing date
-patent "connection change restriction in overlapping area" file date
-CPC class storing device tracking absorption products
-eran aharon elad mentovich efficient parallelized computation of benes network configuration patent claims
+patent connection change restriction overlapping area file date
+CPC class storing device system tracking absorption products
+Eran Aharon Elad Mentovich "Efficient Parallelized Computation of Benes Network Configuration" patent claims
 Craig Stuart location-binding authentication patent claims vs Zhiqing Wu LID patent claims comparison
 Zhiqing Wu patent claims vs Man Gyu Sang helmet patent claims
