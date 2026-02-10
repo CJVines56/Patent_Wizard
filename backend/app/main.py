@@ -2,10 +2,19 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from .api.search import router as search_router
 from .api.eval import router as eval_router
+from pathlib import Path
+from dotenv import load_dotenv
 import logging
 from starlette.responses import Response
 import time
 import json
+
+# Load orchestrator env before importing graph/nodes (Gemini clients initialize at import time).
+_ORCH_DIR = Path(__file__).resolve().parents[1] / "orchestrator"
+load_dotenv(_ORCH_DIR / ".env")
+load_dotenv(_ORCH_DIR / "env")
+
+from backend.orchestrator.graph import compile_graph
 
 app = FastAPI(title="Patent Miner API (POC)", version="0.1.0")
 #logging.basicConfig(level=logging.INFO)
@@ -25,6 +34,10 @@ app.add_middleware(
 
 app.include_router(search_router)
 app.include_router(eval_router)
+
+@app.on_event("startup")
+def build_graph_on_startup():
+    app.state.graph = compile_graph(print_mermaid=False)
 '''
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
