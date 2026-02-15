@@ -1,4 +1,38 @@
 -------------API---------------
+## Fast startup (Docker + API)
+Use this exact flow when you come back to the project.
+
+1) Start Weaviate with Docker Compose
+```powershell
+cd C:\Users\Optim\Patent_Wizard\backend\app
+docker compose up -d
+```
+
+2) Start the FastAPI server (new terminal)
+```powershell
+:: Required for /api/qrels-eval
+$env:QRELS_API_KEY="WWg5_F3HfC0CXYUu8fVezCLn-eSSBO76ZIUefuh2rXg"
+cd C:\Users\Optim\Patent_Wizard
+poetry run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+```
+
+3) Verify everything is live
+```powershell
+curl http://localhost:8080/v1/.well-known/ready
+curl http://localhost:8000/healthz
+```
+
+4) Stop services
+```powershell
+cd C:\Users\Optim\Patent_Wizard\backend\app
+docker compose down
+```
+
+Notes:
+- `docker compose` here starts **Weaviate** (vector DB), not the Python API process.
+- If `uvicorn` is not found, always run it via `poetry run ...`.
+- Weaviate data is persisted in a named Docker volume (`weaviate_data`). After the one-time re‑ingest, your data survives restarts.
+
 ## Quick tests
 🚀 How to Start the API (Development)
 

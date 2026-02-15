@@ -13,10 +13,44 @@ import gzip
 import os
 import re
 import warnings
+from typing import Any
 
 warnings.filterwarnings(
     "ignore",
     message="Token indices sequence length is longer than the specified maximum sequence length.*",
+)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="huggingface_hub")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"colbert\..*")
+warnings.filterwarnings(
+    "ignore",
+    message="`torch.jit.script` is deprecated.*",
+)
+warnings.filterwarnings(
+    "ignore",
+    message="`torch.cuda.amp.GradScaler.*` is deprecated.*",
+)
+warnings.filterwarnings(
+    "ignore",
+    message="`torch.cuda.amp.autocast.*` is deprecated.*",
+)
+warnings.filterwarnings(
+    "ignore",
+    message="builtin type SwigPyPacked has no __module__ attribute",
+)
+warnings.filterwarnings(
+    "ignore",
+    message="builtin type SwigPyObject has no __module__ attribute",
+)
+warnings.filterwarnings(
+    "ignore",
+    message="builtin type swigvarlink has no __module__ attribute",
+)
+warnings.filterwarnings(
+    "ignore",
+    message="`huggingface_hub` cache-system uses symlinks by default.*",
 )
 
 DEFAULT_MODEL_NAME = "colbert-ir/colbertv2.0"
@@ -60,11 +94,16 @@ REBALANCE_OVERLAP_TOKENS = int(os.environ.get("REBALANCE_OVERLAP_TOKENS", "30"))
 TOKEN_VECTOR_DIM = int(os.environ.get("TOKEN_VECTOR_DIM", "768"))
 TOKEN_VECTOR_DTYPE = os.environ.get("TOKEN_VECTOR_DTYPE", "float16").lower()
 USE_TOKEN_PROJECTION = bool(
-    os.environ.get("USE_TOKEN_PROJECTION", "1") in {"1", "true", "True", "yes", "YES"}
+    os.environ.get("USE_TOKEN_PROJECTION", "0") in {"1", "true", "True", "yes", "YES"}
 )
+USE_COLBERT_CHECKPOINT = bool(
+    os.environ.get("USE_COLBERT_CHECKPOINT", "0") in {"1", "true", "True", "yes", "YES"}
+)
+COLBERT_DOC_MAXLEN = int(os.environ.get("COLBERT_DOC_MAXLEN", "180"))
+COLBERT_QUERY_MAXLEN = int(os.environ.get("COLBERT_QUERY_MAXLEN", "32"))
 COLBERT_VARIANTS = os.environ.get(
     "COLBERT_VARIANTS",
-    "768_f32,768_f16,128_f32,128_f16",
+    "768_f16",
 ).lower()
 
 if TOKEN_VECTOR_DIM not in {768, 128}:
@@ -75,6 +114,73 @@ if TOKEN_VECTOR_DIM == 128 and not USE_TOKEN_PROJECTION:
     raise ValueError("TOKEN_VECTOR_DIM=128 requires USE_TOKEN_PROJECTION=True")
 
 _TOKEN_PROJECTION = None  # Experimental stand-in for a ColBERT head; replace later.
+_COLBERT_CHECKPOINT = None
+_COLBERT_CKPT_LOAD_ATTEMPTED = False
+_COLBERT_CKPT_WARNED = False
+
+
+def _coerce_token_matrix(obj: Any) -> torch.Tensor | None:
+    if obj is None:
+        return None
+    if isinstance(obj, (list, tuple)):
+        if not obj:
+            return None
+        # ColBERT APIs often return a batch container; unwrap first entry.
+        return _coerce_token_matrix(obj[0])
+    if isinstance(obj, torch.Tensor):
+        t = obj
+    else:
+        try:
+            t = torch.as_tensor(obj)
+        except Exception:
+            return None
+    if t.dim() == 3 and t.shape[0] == 1:
+        t = t[0]
+    if t.dim() != 2:
+        return None
+    return t.to(torch.float32)
+
+
+def _get_colbert_checkpoint():
+    global _COLBERT_CHECKPOINT, _COLBERT_CKPT_LOAD_ATTEMPTED, _COLBERT_CKPT_WARNED
+    if not USE_COLBERT_CHECKPOINT:
+        return None
+    if _COLBERT_CHECKPOINT is not None:
+        return _COLBERT_CHECKPOINT
+    if _COLBERT_CKPT_LOAD_ATTEMPTED:
+        return None
+    _COLBERT_CKPT_LOAD_ATTEMPTED = True
+    try:
+        from colbert.infra import ColBERTConfig
+        from colbert.modeling.checkpoint import Checkpoint
+
+        cfg = ColBERTConfig(doc_maxlen=COLBERT_DOC_MAXLEN, query_maxlen=COLBERT_QUERY_MAXLEN)
+        ckpt = Checkpoint(MODEL_NAME, colbert_config=cfg)
+        if DEVICE.type == "cuda":
+            ckpt.cuda()
+        ckpt.eval()
+        print("[colbert] Checkpoint loaded (trained 128-D head enabled).")
+        _COLBERT_CHECKPOINT = ckpt
+    except Exception as e:
+        if not _COLBERT_CKPT_WARNED:
+            print(f"[warn] Failed to load ColBERT checkpoint path; falling back to linear projection. ({e})")
+            _COLBERT_CKPT_WARNED = True
+    return _COLBERT_CHECKPOINT
+
+
+def _embed_128_tokens_from_checkpoint(text: str, *, is_query: bool) -> torch.Tensor | None:
+    ckpt = _get_colbert_checkpoint()
+    if ckpt is None:
+        return None
+    with torch.no_grad():
+        if is_query:
+            out = ckpt.queryFromText([text], bsize=1)
+        else:
+            out = ckpt.docFromText([text], bsize=1, keep_dims=False)
+    mat = _coerce_token_matrix(out)
+    if mat is None:
+        return None
+    return F.normalize(mat, p=2, dim=1)
 
 
 def _get_token_projection():
@@ -96,7 +202,7 @@ def _variant_enabled(name: str) -> bool:
     return name in enabled
 
 
-def _build_token_variants(token_vectors: torch.Tensor) -> dict[str, object]:
+def _build_token_variants(token_vectors: torch.Tensor, text: str | None = None, *, is_query: bool = False) -> dict[str, object]:
     variants: dict[str, object] = {}
     if _variant_enabled("768_f32"):
         variants["768_f32"] = token_vectors.to(torch.float32).detach().cpu().numpy()
@@ -112,11 +218,15 @@ def _build_token_variants(token_vectors: torch.Tensor) -> dict[str, object]:
             "scale": scale.detach().cpu().numpy().astype("float32"),
         }
     if _variant_enabled("128_f32") or _variant_enabled("128_f16"):
-        proj = _get_token_projection()
-        if proj is None:
-            raise RuntimeError("Token projection layer not initialized")
-        projected = proj(token_vectors)
-        projected = F.normalize(projected, p=2, dim=1)
+        projected = None
+        if text:
+            projected = _embed_128_tokens_from_checkpoint(text, is_query=is_query)
+        if projected is None:
+            proj = _get_token_projection()
+            if proj is None:
+                raise RuntimeError("Token projection layer not initialized")
+            projected = proj(token_vectors)
+            projected = F.normalize(projected, p=2, dim=1)
         if _variant_enabled("128_f32"):
             variants["128_f32"] = projected.to(torch.float32).detach().cpu().numpy()
         if _variant_enabled("128_f16"):
@@ -299,7 +409,7 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
                 .tolist()
             )
             token_vectors = masked_embeddings
-            colbert_variants = _build_token_variants(token_vectors)
+            colbert_variants = _build_token_variants(token_vectors, text=text, is_query=False)
             if TOKEN_VECTOR_DIM == 768:
                 colbert_vectors = colbert_variants.get(
                     "768_f16" if TOKEN_VECTOR_DTYPE == "float16" else "768_f32"
@@ -341,6 +451,34 @@ def embed_query(query, tokenizer, model, max_length=256):
     query_vector = masked_embeddings.mean(dim=0, keepdim=True)
     query_vector = query_vector.detach().cpu().numpy().astype("float32")  # keep 2D
     return query_vector
+
+
+def embed_query_tokens_for_shard(query: str, shard: str, max_length: int = 256):
+    """
+    Token-level query embeddings for a specific shard.
+    Uses ColBERT checkpoint 128-D head when enabled; falls back to linear projection.
+    """
+    shard = shard.lower()
+    tokens = tokenizer(
+        query,
+        return_tensors="pt",
+        truncation=True,
+        padding="max_length",
+        max_length=max_length,
+    )
+    tokens = {k: v.to(DEVICE) for k, v in tokens.items()}
+    model.eval()
+    with torch.no_grad():
+        outputs = model(**tokens)
+    token_embeddings = outputs.last_hidden_state.squeeze(0)
+    attn_mask = tokens["attention_mask"].squeeze(0).bool()
+    masked = token_embeddings[attn_mask]
+    if masked.numel() == 0:
+        masked = token_embeddings[:1]
+    variants = _build_token_variants(masked, text=query, is_query=True)
+    if shard not in variants:
+        raise ValueError(f"Shard '{shard}' unavailable. Enabled variants: {sorted(variants.keys())}")
+    return variants[shard]
 
 
 def _open_output(path: Path):

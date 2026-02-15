@@ -9,6 +9,8 @@ import os
 import json
 import gzip
 import time
+import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from embed import (
@@ -29,6 +31,49 @@ LMDB_VECTOR_DTYPE = os.environ.get(
     os.environ.get("LMDB_VECTOR_DTYPE", "float16"),
 ).lower()
 _BYTES_PER_FLOAT = 2 if LMDB_VECTOR_DTYPE == "float16" else 4
+
+
+def _build_weekly_dates(start_date: str, weeks_back: int) -> list[str]:
+    anchor = datetime.strptime(start_date, "%Y-%m-%d")
+    count = max(0, int(weeks_back))
+    return [
+        (anchor - timedelta(days=7 * i)).strftime("%Y-%m-%d")
+        for i in range(count + 1)
+    ]
+
+
+def _compact_util_shards(util_shards: set[str]) -> None:
+    if not util_shards:
+        return
+    print(f"[post] Compacting {len(util_shards)} util LMDB shard(s)...")
+    for util in sorted(util_shards):
+        try:
+            subprocess.run(
+                ["poetry", "run", "python", "backend/app/scripts/compact_lmdb.py", "--util-shard", util],
+                check=True,
+            )
+        except Exception as e:
+            print(f"[post] LMDB compact failed for {util}: {e}")
+    util_shards.clear()
+
+
+def _load_completed_ingest_dates(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    done: set[str] = set()
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            value = line.strip()
+            if not value or value.startswith("#"):
+                continue
+            done.add(value)
+    return done
+
+
+def _append_completed_ingest_date(path: Path, ingest_date: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"{ingest_date}\n")
 
 
 class _IngestStats:
@@ -164,6 +209,9 @@ def real_ingest(
     store=True,
     export_path: Path | None = None,
     ingest_batch_size: int | None = 512,
+    ingest_dates: list[str] | None = None,
+    master_manifest_csv: Path | None = None,
+    ingest_checkpoint_path: Path | None = None,
 ):
     """
     Download, embed, and optionally store/export real patent chunks.
@@ -176,6 +224,17 @@ def real_ingest(
     export_target = None
     stats = _IngestStats()
     start_time = time.perf_counter()
+    current_dataset_shards: set[str] = set()
+    completed_dates = (
+        _load_completed_ingest_dates(ingest_checkpoint_path)
+        if ingest_checkpoint_path
+        else set()
+    )
+    if completed_dates:
+        print(
+            f"[checkpoint] Loaded {len(completed_dates)} completed date(s) "
+            f"from {ingest_checkpoint_path}"
+        )
 
     if export_path:
         export_target = Path(export_path)
@@ -193,6 +252,12 @@ def real_ingest(
         embedded = embed_chunks(batch, tokenizer, model)
         batch_seconds = time.perf_counter() - batch_start
         total_embedded += len(embedded)
+        for rec in embedded:
+            shard = rec.get("dataset_shard")
+            if isinstance(shard, str):
+                s = shard.strip().upper()
+                if s.startswith("UTIL"):
+                    current_dataset_shards.add(s)
         print(
             f"[ingest] Embedded batch of {len(embedded)} chunks "
             f"(total {total_embedded}) in {batch_seconds:.1f}s"
@@ -221,32 +286,62 @@ def real_ingest(
                 export_handle.write("\n")
 
     try:
+        dates = ingest_dates or ["2025-09-01"]
         if ingest_batch_size:
-            bulk_dataset_download(
-                "2025-09-01",
-                DOWNLOAD_DIR,
-                use_manifest=False,
-                sample_k=0,
-                max_patents=None,
-                return_chunks=False,
-                batch_size=ingest_batch_size,
-                on_batch=_record_batch,
-            )
+            for ingest_date in dates:
+                if ingest_date in completed_dates:
+                    print(f"[checkpoint] Skipping completed date {ingest_date}")
+                    continue
+                print(f"[ingest] Starting dataset for {ingest_date}")
+                current_dataset_shards.clear()
+                bulk_dataset_download(
+                    ingest_date,
+                    DOWNLOAD_DIR,
+                    use_manifest=False,
+                    sample_k=0,
+                    max_patents=None,
+                    return_chunks=False,
+                    batch_size=ingest_batch_size,
+                    on_batch=_record_batch,
+                    master_manifest_csv=master_manifest_csv,
+                )
+                _compact_util_shards(current_dataset_shards)
+                if ingest_checkpoint_path:
+                    _append_completed_ingest_date(ingest_checkpoint_path, ingest_date)
+                    completed_dates.add(ingest_date)
+                    print(f"[checkpoint] Recorded completion for {ingest_date}")
         else:
-            chunks = bulk_dataset_download(
-                "2025-09-01",
-                DOWNLOAD_DIR,
-                use_manifest=False,
-                sample_k=0,
-                max_patents=None,
-            )
-            _record_batch(chunks)
+            for ingest_date in dates:
+                if ingest_date in completed_dates:
+                    print(f"[checkpoint] Skipping completed date {ingest_date}")
+                    continue
+                print(f"[ingest] Starting dataset for {ingest_date}")
+                current_dataset_shards.clear()
+                chunks = bulk_dataset_download(
+                    ingest_date,
+                    DOWNLOAD_DIR,
+                    use_manifest=False,
+                    sample_k=0,
+                    max_patents=None,
+                    master_manifest_csv=master_manifest_csv,
+                )
+                _record_batch(chunks)
+                _compact_util_shards(current_dataset_shards)
+                if ingest_checkpoint_path:
+                    _append_completed_ingest_date(ingest_checkpoint_path, ingest_date)
+                    completed_dates.add(ingest_date)
+                    print(f"[checkpoint] Recorded completion for {ingest_date}")
     finally:
+        _compact_util_shards(current_dataset_shards)
         elapsed = time.perf_counter() - start_time
         hours = int(elapsed // 3600)
         minutes = int((elapsed % 3600) // 60)
         seconds = int(elapsed % 60)
         print(f"[timing] Total ingest+embed time: {hours}h {minutes}m {seconds}s")
+        print(
+            "[next] Start API: "
+            "poetry run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
+        )
         if export_handle:
             export_handle.close()
             print(f"[export] Saved embeddings to {export_target}")
@@ -288,4 +383,36 @@ if __name__ == "__main__":
     elif mode == "import":
         import_exported_embeddings()
     else:  # default real ingest + store
-        real_ingest()
+        ingest_dates_raw = os.environ.get("INGEST_DATES", "").strip()
+        if ingest_dates_raw:
+            ingest_dates = [
+                d.strip()
+                for d in ingest_dates_raw.split(",")
+                if d.strip()
+            ]
+        else:
+            ingest_start_date = os.environ.get("INGEST_START_DATE", "2025-09-01").strip()
+            try:
+                ingest_weeks_back = int(os.environ.get("INGEST_WEEKS_BACK", "0"))
+            except ValueError:
+                ingest_weeks_back = 0
+            ingest_dates = _build_weekly_dates(ingest_start_date, ingest_weeks_back)
+            print(
+                f"[ingest] Auto-generated {len(ingest_dates)} weekly date(s) "
+                f"from {ingest_start_date} with INGEST_WEEKS_BACK={max(0, ingest_weeks_back)}"
+            )
+        manifest_raw = os.environ.get(
+            "MASTER_MANIFEST_CSV",
+            "backend/validation/master_patent_manifest.csv",
+        ).strip()
+        manifest_csv = Path(manifest_raw) if manifest_raw else None
+        checkpoint_raw = os.environ.get(
+            "INGEST_CHECKPOINT_PATH",
+            "backend/validation/ingest_completed_dates.txt",
+        ).strip()
+        checkpoint_path = Path(checkpoint_raw) if checkpoint_raw else None
+        real_ingest(
+            ingest_dates=ingest_dates,
+            master_manifest_csv=manifest_csv,
+            ingest_checkpoint_path=checkpoint_path,
+        )

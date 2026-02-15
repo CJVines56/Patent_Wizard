@@ -8,12 +8,9 @@ from langchain.tools import tool
 
 from backend.app.services.download import rich_to_plain
 from backend.app.store import (
-    LMDB_PATH_128_F16,
-    LMDB_PATH_128_F32,
     LMDB_PATH_768_F16,
-    LMDB_PATH_768_F32,
-    LMDB_PATH_768_I8,
     load_colbert_from_lmdb,
+    resolve_lmdb_path,
 )
 
 WEAVIATE_GRAPHQL = os.environ.get("WEAVIATE_GRAPHQL", "http://localhost:8080/v1/graphql")
@@ -26,11 +23,7 @@ _TOKENIZER = None
 _MODEL = None
 
 SHARD_TO_PATH = {
-    "768_f32": LMDB_PATH_768_F32,
     "768_f16": LMDB_PATH_768_F16,
-    "768_i8": LMDB_PATH_768_I8,
-    "128_f32": LMDB_PATH_128_F32,
-    "128_f16": LMDB_PATH_128_F16,
 }
 
 
@@ -71,8 +64,6 @@ def _embed_query_colbert(query: str) -> List[List[float]]:
 def _embed_query_tokens_for_shard(query: str, shard: str) -> np.ndarray:
     _init_colbert()
     import torch
-    import torch.nn.functional as F
-    from backend.app.embed import _get_token_projection
 
     shard = shard.lower()
     if shard not in SHARD_TO_PATH:
@@ -94,13 +85,6 @@ def _embed_query_tokens_for_shard(query: str, shard: str) -> np.ndarray:
     masked = token_embeddings[attn_mask]
     if masked.numel() == 0:
         masked = token_embeddings[:1]
-
-    if shard.startswith("128_"):
-        proj = _get_token_projection()
-        if proj is None:
-            raise RuntimeError("Token projection layer not initialized for 128-d shard")
-        masked = proj(masked)
-        masked = F.normalize(masked, p=2, dim=1)
 
     dtype = torch.float16 if shard.endswith("f16") else torch.float32
     return masked.to(dtype).detach().cpu().numpy()
@@ -211,16 +195,24 @@ def _rerank_hits_with_lmdb(hits: List[Dict[str, Any]], query: str, shard: str, r
     shard = shard.lower()
     if shard not in SHARD_TO_PATH:
         return hits
-    lmdb_path = SHARD_TO_PATH[shard]
     q_tokens = _embed_query_tokens_for_shard(query, shard)
     top = hits[: max(0, int(rerank_k))]
     scored = []
     for hit in top:
         addl = hit.get("_additional") or {}
         obj_id = addl.get("id")
-        if not obj_id:
+        claim_id = hit.get("claim_id")
+        doc_id = hit.get("doc_id")
+        if not obj_id and not claim_id:
             continue
-        doc_tokens = load_colbert_from_lmdb(lmdb_path, str(obj_id))
+        lmdb_path = resolve_lmdb_path(shard, doc_id=doc_id)
+        # Primary LMDB key is claim_id; keep UUID fallback for older ingests.
+        lookup_keys = [k for k in [claim_id, obj_id] if k]
+        doc_tokens = None
+        for k in lookup_keys:
+            doc_tokens = load_colbert_from_lmdb(lmdb_path, str(k))
+            if doc_tokens is not None:
+                break
         if doc_tokens is None:
             continue
         score = _maxsim_score(q_tokens, doc_tokens)

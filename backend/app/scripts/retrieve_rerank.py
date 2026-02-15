@@ -20,7 +20,7 @@ from typing import Iterable
 import numpy as np
 import requests
 
-from backend.app.embed import _get_token_projection, model, tokenizer
+from backend.app.embed import embed_query_tokens_for_shard, model, tokenizer
 from backend.app.services.download import rich_to_plain
 from backend.app.store import (
     LMDB_PATH_768_I8,
@@ -96,33 +96,8 @@ def _embed_query_tokens(query: str, shard: str) -> np.ndarray:
     """
     Token-level query embeddings matching the LMDB shard dimensionality.
     """
-    import torch
-    import torch.nn.functional as F
-
-    tokens = tokenizer(
-        query,
-        return_tensors="pt",
-        truncation=True,
-        padding="max_length",
-        max_length=256,
-    )
-    tokens = {k: v.to(model.device) for k, v in tokens.items()}
-    model.eval()
-    with torch.no_grad():
-        outputs = model(**tokens)
-    token_embeddings = outputs.last_hidden_state.squeeze(0)
-    attn_mask = tokens["attention_mask"].squeeze(0).bool()
-    masked = token_embeddings[attn_mask]
-    if masked.numel() == 0:
-        masked = token_embeddings[:1]
-    if shard.startswith("128_"):
-        proj = _get_token_projection()
-        if proj is None:
-            raise RuntimeError("Token projection layer not initialized")
-        masked = proj(masked)
-        masked = F.normalize(masked, p=2, dim=1)
-    dtype = torch.float16 if shard.endswith("f16") else torch.float32
-    return masked.to(dtype).detach().cpu().numpy()
+    variants = embed_query_tokens_for_shard(query, shard=shard, max_length=256)
+    return np.asarray(variants)
 
 
 def retrieve_claims(query: str, limit: int = 200, shard: str = "768_f16") -> list[ClaimHit]:
@@ -171,7 +146,7 @@ def rerank_with_lmdb(hits: list[ClaimHit], query: str, shard: str, rerank_k: int
     top = hits[: int(rerank_k)]
     rescored: list[ClaimHit] = []
     for h in top:
-        doc_tokens = load_colbert_from_lmdb(lmdb_path, h.uuid)
+        doc_tokens = load_colbert_from_lmdb(lmdb_path, h.claim_id)
         if doc_tokens is None:
             continue
         h.score = _maxsim_score(q_tokens, doc_tokens)
@@ -320,6 +295,32 @@ def evaluate(
     return {k: (sum(v) / len(v) if v else 0.0) for k, v in metrics.items()}
 
 
+def evaluate_sweep(
+    queries_path: Path,
+    qrels_path: Path,
+    retrieve_shard: str,
+    rerank_shards: list[str],
+    limit: int,
+    rerank_k: int,
+    *,
+    filter_missing_qrels: bool = True,
+) -> list[dict]:
+    results: list[dict] = []
+    for shard in rerank_shards:
+        scores = evaluate(
+            queries_path,
+            qrels_path,
+            retrieve_shard=retrieve_shard,
+            rerank_shard=shard,
+            limit=limit,
+            rerank_k=rerank_k,
+            filter_missing_qrels=filter_missing_qrels,
+        )
+        row = {"rerank_shard": shard, **scores}
+        results.append(row)
+    return results
+
+
 def _print_hits(hits: list[ClaimHit], k: int = 10):
     for i, h in enumerate(hits[:k], start=1):
         score = f"{h.score:.3f}" if h.score is not None else "-"
@@ -374,6 +375,17 @@ def main():
     parser.add_argument("--qrels", type=Path, default=None, help="Path to JSONL qrels for evaluation.")
     parser.add_argument("--metrics-csv", type=Path, default=None, help="Write evaluation metrics to CSV.")
     parser.add_argument(
+        "--sweep-rerank-shards",
+        action="store_true",
+        help="Run evaluation once per rerank shard and write a CSV.",
+    )
+    parser.add_argument(
+        "--sweep-csv",
+        type=Path,
+        default=None,
+        help="Output CSV path for sweep results (required with --sweep-rerank-shards).",
+    )
+    parser.add_argument(
         "--filter-missing-qrels",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -388,30 +400,59 @@ def main():
         return
 
     if args.queries and args.qrels:
-        scores = evaluate(
-            args.queries,
-            args.qrels,
-            retrieve_shard=args.retrieve_shard,
-            rerank_shard=args.rerank_shard,
-            limit=args.limit,
-            rerank_k=args.rerank_k,
-            filter_missing_qrels=args.filter_missing_qrels,
-        )
-        print(json.dumps(scores, indent=2))
-        if args.metrics_csv:
-            args.metrics_csv.parent.mkdir(parents=True, exist_ok=True)
-            with args.metrics_csv.open("w", encoding="utf-8", newline="") as f:
+        if args.sweep_rerank_shards:
+            if not args.sweep_csv:
+                raise SystemExit("Provide --sweep-csv when using --sweep-rerank-shards.")
+            rerank_shards = sorted(SHARD_TO_PATH.keys())
+            results = evaluate_sweep(
+                args.queries,
+                args.qrels,
+                retrieve_shard=args.retrieve_shard,
+                rerank_shards=rerank_shards,
+                limit=args.limit,
+                rerank_k=args.rerank_k,
+                filter_missing_qrels=args.filter_missing_qrels,
+            )
+            args.sweep_csv.parent.mkdir(parents=True, exist_ok=True)
+            with args.sweep_csv.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["precision@10", "recall@10", "ndcg@10", "mrr@10"])
-                writer.writerow(
-                    [
-                        scores.get("precision@10", 0.0),
-                        scores.get("recall@10", 0.0),
-                        scores.get("ndcg@10", 0.0),
-                        scores.get("mrr@10", 0.0),
-                    ]
-                )
-            print(f"Wrote metrics to {args.metrics_csv}")
+                writer.writerow(["rerank_shard", "precision@10", "recall@10", "ndcg@10", "mrr@10"])
+                for row in results:
+                    writer.writerow(
+                        [
+                            row.get("rerank_shard"),
+                            row.get("precision@10", 0.0),
+                            row.get("recall@10", 0.0),
+                            row.get("ndcg@10", 0.0),
+                            row.get("mrr@10", 0.0),
+                        ]
+                    )
+            print(f"Wrote sweep results to {args.sweep_csv}")
+        else:
+            scores = evaluate(
+                args.queries,
+                args.qrels,
+                retrieve_shard=args.retrieve_shard,
+                rerank_shard=args.rerank_shard,
+                limit=args.limit,
+                rerank_k=args.rerank_k,
+                filter_missing_qrels=args.filter_missing_qrels,
+            )
+            print(json.dumps(scores, indent=2))
+            if args.metrics_csv:
+                args.metrics_csv.parent.mkdir(parents=True, exist_ok=True)
+                with args.metrics_csv.open("w", encoding="utf-8", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["precision@10", "recall@10", "ndcg@10", "mrr@10"])
+                    writer.writerow(
+                        [
+                            scores.get("precision@10", 0.0),
+                            scores.get("recall@10", 0.0),
+                            scores.get("ndcg@10", 0.0),
+                            scores.get("mrr@10", 0.0),
+                        ]
+                    )
+                print(f"Wrote metrics to {args.metrics_csv}")
         return
 
     if not args.query:

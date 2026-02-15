@@ -245,6 +245,43 @@ def _is_util_member(name: str) -> bool:
     parts = name.replace("\\", "/").split("/")
     return any(p.upper().startswith("UTIL") for p in parts)
 
+
+def _extract_util_shard_from_path(name: str | None) -> str | None:
+    if not name:
+        return None
+    m = re.search(r"UTIL\d{5}", str(name).upper())
+    return m.group(0) if m else None
+
+
+def _util_shard_from_doc_id(doc_id: str | None) -> str | None:
+    if not doc_id:
+        return None
+    digits = "".join(ch for ch in str(doc_id) if ch.isdigit())
+    if len(digits) < 5:
+        return None
+    return f"UTIL{digits[:5]}"
+
+
+def _google_patent_source(doc_id: str | None, kind: str | None = None) -> str:
+    base = (doc_id or "").strip()
+    if not base:
+        return ""
+    if not base.upper().startswith("US"):
+        base = f"US{base}"
+    if kind:
+        k = str(kind).strip()
+        if k and not base.upper().endswith(k.upper()):
+            base = f"{base}{k}"
+    return f"https://patents.google.com/patent/{base}"
+
+
+def _extract_abstract_text(root) -> str:
+    abstract_nodes = root.xpath("//abstract")
+    if not abstract_nodes:
+        return ""
+    text = rich_to_plain(elem_to_rich_text(abstract_nodes[0]))
+    return text
+
 def _merge_list_fields(left: list | None, right: list | None) -> list:
     merged: list = []
     for item in left or []:
@@ -736,6 +773,60 @@ class BatchHashRecorder:
                 writer.writeheader()
             writer.writerows(self._rows)
         self._rows = []
+
+
+class MasterManifestWriter:
+    FIELDNAMES = ["Title", "CPC", "Abstract", "Claims count", "date filed", "source"]
+
+    def __init__(self, csv_path: Path):
+        self.csv_path = Path(csv_path)
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+        self._seen: set[str] = set()
+        if self.csv_path.exists() and self.csv_path.stat().st_size > 0:
+            with self.csv_path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    src = (row.get("source") or "").strip()
+                    if src:
+                        self._seen.add(src)
+        self._file = self.csv_path.open("a", encoding="utf-8", newline="")
+        self._writer = csv.DictWriter(self._file, fieldnames=self.FIELDNAMES)
+        if self.csv_path.stat().st_size == 0:
+            self._writer.writeheader()
+
+    def write(
+        self,
+        *,
+        title: str,
+        cpc: str,
+        abstract: str,
+        claims_count: int,
+        filing_date: str,
+        source: str,
+    ):
+        src = (source or "").strip()
+        if not src or src in self._seen:
+            return
+        self._seen.add(src)
+        cpc_value = cpc
+        if isinstance(cpc_value, (list, tuple, set)):
+            cpc_value = "; ".join(str(x).strip() for x in cpc_value if str(x).strip())
+        self._writer.writerow(
+            {
+                "Title": title or "",
+                "CPC": cpc_value or "",
+                "Abstract": abstract or "",
+                "Claims count": int(max(0, int(claims_count))),
+                "date filed": filing_date or "",
+                "source": src,
+            }
+        )
+
+    def close(self):
+        try:
+            self._file.flush()
+        finally:
+            self._file.close()
 
 
 def _flush_collector(chunks):
@@ -2466,6 +2557,7 @@ def bulk_dataset_download(
     validate_metadata: bool = False,
     metadata_mismatch_csv: Path | None = None,
     max_patents: int | None = 1000,
+    master_manifest_csv: Path | None = None,
 ) -> list[dict] | None:
     '''This function takes in a start date and creates an end date 7 days later.
     It then queries the USPTO bulk data API for available datasets in that date range.
@@ -2489,6 +2581,7 @@ def bulk_dataset_download(
     path = Path(path)
     meta_validate = bool(validate_metadata)
     meta_mismatch_collector = MetadataMismatchCollector(metadata_mismatch_csv) if (meta_validate and metadata_mismatch_csv) else None
+    manifest_writer = MasterManifestWriter(master_manifest_csv) if master_manifest_csv else None
     sample_enabled = bool(sample_k and sample_k > 0)
     assets_by_doc: dict[str, dict] | None = {} if sample_enabled else None
     return_chunks = bool(return_chunks)
@@ -2550,6 +2643,10 @@ def bulk_dataset_download(
         if n:
             print(f"[metadata] wrote {n} mismatch row(s) to {meta_mismatch_collector.csv_path}")
 
+    def _close_manifest_writer():
+        if manifest_writer:
+            manifest_writer.close()
+
     #tmp_path.replace(file_path)  # rename .part -> .zip after success
     print(f"Saved/using: {file_path} ({file_path.stat().st_size:,} bytes)")
     if product_upper == "APPXML":
@@ -2596,6 +2693,7 @@ def bulk_dataset_download(
                     authors = ""
                     doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
                     doc_id = doc_id[0] if doc_id else None
+                    dataset_shard = _util_shard_from_doc_id(doc_id)
                     if doc_id and doc_id[:2] == "RE":
                         print(f"Skipping reissue patent {doc_id}")
                         continue
@@ -2621,6 +2719,7 @@ def bulk_dataset_download(
                     classification = extract_primary_classification(root)
                     classification_cpc = extract_all_cpc_symbols(root)
                     title = extract_title(root)
+                    abstract_text = _extract_abstract_text(root)
                     first_names = root.xpath("//inventors//inventor//addressbook//first-name//text()")
                     last_names = root.xpath("//inventors//inventor//addressbook//last-name//text()")
                     for name in zip(first_names, last_names):
@@ -2638,6 +2737,7 @@ def bulk_dataset_download(
                     }
                     _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
                     doc_buffer: list[dict] = []
+                    claims_count = 0
                     def _record_chunk(payload: dict):
                         doc_buffer.append(payload)
                     for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
@@ -2660,10 +2760,21 @@ def bulk_dataset_download(
                                 "authors": authors,
                                 "classification": classification,
                                 "title": title,
+                                "dataset_shard": dataset_shard,
                             }
                         )
                         counter += 1
+                        claims_count += 1
                     doc_chunks, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=bool(sampler))
+                    if manifest_writer:
+                        manifest_writer.write(
+                            title=title,
+                            cpc=classification_cpc or classification,
+                            abstract=abstract_text,
+                            claims_count=claims_count,
+                            filing_date=filing_date,
+                            source=_google_patent_source(doc_id, kind),
+                        )
                     _log(f"[parse] doc {i}: {doc_id} (chunks: {counter})")
                     if sampler and doc_chunks and doc_id:
                         try:
@@ -2691,7 +2802,9 @@ def bulk_dataset_download(
             print("[done] Completed processing all subdocuments (APPXML zip).")
             _flush_meta_mismatches()
             if return_chunks:
+                _close_manifest_writer()
                 return chunks
+            _close_manifest_writer()
             return None
     is_tar = file_path.name.lower().endswith((".tar", ".tar.gz", ".tgz"))
     if is_tar:
@@ -2751,6 +2864,7 @@ def bulk_dataset_download(
                         authors = ""
                         doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
                         doc_id = doc_id[0] if doc_id else None
+                        dataset_shard = _extract_util_shard_from_path(inner_xml.name) or _util_shard_from_doc_id(doc_id)
                         if doc_id and doc_id[:2] == "RE":
                             print(f'Skipping reissue patent {doc_id}')
                             continue
@@ -2773,6 +2887,7 @@ def bulk_dataset_download(
                         classification = extract_primary_classification(root)
                         classification_cpc = extract_all_cpc_symbols(root)
                         title = extract_title(root)
+                        abstract_text = _extract_abstract_text(root)
                         first_names = root.xpath("//inventors//inventor//addressbook//first-name//text()")
                         last_names = root.xpath("//inventors//inventor//addressbook//last-name//text()")
                         for name in zip(first_names, last_names):
@@ -2790,6 +2905,7 @@ def bulk_dataset_download(
                         }
                         _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
                         doc_buffer: list[dict] = []
+                        claims_count = 0
                         def _record_chunk(payload: dict):
                             doc_buffer.append(payload)
                         for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
@@ -2811,9 +2927,20 @@ def bulk_dataset_download(
                                            "authors":authors,
                                            "classification": classification,
                                            "title": title,
-                                           })
+                                           "dataset_shard": dataset_shard,
+                                            })
                             counter += 1
+                            claims_count += 1
                         _, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=False)
+                        if manifest_writer:
+                            manifest_writer.write(
+                                title=title,
+                                cpc=classification_cpc or classification,
+                                abstract=abstract_text,
+                                claims_count=claims_count,
+                                filing_date=filing_date,
+                                source=_google_patent_source(doc_id, kind),
+                            )
                         _log(f"[parse] doc {i}: {doc_id} (chunks: {counter})")
                 # Emit per-patent Markdown files + CSV manifest (no text)
                 try:
@@ -2844,7 +2971,9 @@ def bulk_dataset_download(
                 print("[done] Completed processing all subdocuments (tar/xml).")
                 _flush_meta_mismatches()
                 if return_chunks:
+                    _close_manifest_writer()
                     return chunks
+                _close_manifest_writer()
                 return None
 
             if zip_members:
@@ -2910,6 +3039,7 @@ def bulk_dataset_download(
                                     authors = ""
                                     doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
                                     doc_id = doc_id[0] if doc_id else None
+                                    dataset_shard = _extract_util_shard_from_path(m.name) or _util_shard_from_doc_id(doc_id)
                                     if doc_id and doc_id[:2] == "RE":
                                         print(f'[skip] reissue patent {doc_id}')
                                         continue
@@ -2932,6 +3062,7 @@ def bulk_dataset_download(
                                     classification = extract_primary_classification(root)
                                     classification_cpc = extract_all_cpc_symbols(root)
                                     title = extract_title(root)
+                                    abstract_text = _extract_abstract_text(root)
                                     first_names = root.xpath("//inventors//inventor//addressbook//first-name//text()")
                                     last_names = root.xpath("//inventors//inventor//addressbook//last-name//text()")
                                     for name in zip(first_names, last_names):
@@ -2950,6 +3081,7 @@ def bulk_dataset_download(
                                     _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
                                     if doc_chunks is None:
                                         doc_chunks = [] if sample_enabled else None
+                                    claims_count = 0
                                     for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
                                         claim_text = elem_to_rich_text(claim).strip()
                                         if not claim_text:
@@ -2968,10 +3100,21 @@ def bulk_dataset_download(
                                                        "authors":authors,
                                                        "classification": classification,
                                                        "title": title,
-                                                       })
+                                                       "dataset_shard": dataset_shard,
+                                                        })
                                         counter += 1
+                                        claims_count += 1
 
                                     doc_chunks, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=sample_enabled)
+                                    if manifest_writer:
+                                        manifest_writer.write(
+                                            title=title,
+                                            cpc=classification_cpc or classification,
+                                            abstract=abstract_text,
+                                            claims_count=claims_count,
+                                            filing_date=filing_date,
+                                            source=_google_patent_source(doc_id, kind),
+                                        )
                                     _log(f"[parse] {m.name}: {doc_id} (chunks: {counter})")
                                     if sample_enabled and doc_id and assets_by_doc is not None:
                                         try:
@@ -3044,7 +3187,9 @@ def bulk_dataset_download(
                 print("[done] Completed processing all subdocuments (tar/zips).")
                 _flush_meta_mismatches()
                 if return_chunks:
+                    _close_manifest_writer()
                     return chunks
+                _close_manifest_writer()
                 return None
 
             # Neither layout was detected
@@ -3102,6 +3247,7 @@ def bulk_dataset_download(
                     authors = ""
                     doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
                     doc_id = doc_id[0] if doc_id else None
+                    dataset_shard = _extract_util_shard_from_path(inner_xml_name) or _util_shard_from_doc_id(doc_id)
                     if doc_id and doc_id[:2] == "RE":
                         print(f'Skipping reissue patent {doc_id}')
                         continue
@@ -3126,6 +3272,7 @@ def bulk_dataset_download(
                     classification_cpc = extract_all_cpc_symbols(root)
                     # Patent title (robust to namespaces)
                     title = extract_title(root)
+                    abstract_text = _extract_abstract_text(root)
                     first_names = root.xpath("//inventors//inventor//addressbook//first-name//text()")
                     last_names = root.xpath("//inventors//inventor//addressbook//last-name//text()")
                     for name in zip(first_names, last_names):
@@ -3144,6 +3291,7 @@ def bulk_dataset_download(
                     }
                     _maybe_validate_metadata(last_doc_meta, enable=meta_validate, verbose=verbose, collector=meta_mismatch_collector)
                     doc_buffer: list[dict] = []
+                    claims_count = 0
                     def _record_chunk(payload: dict):
                         doc_buffer.append(payload)
                     for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
@@ -3164,9 +3312,20 @@ def bulk_dataset_download(
                                        "authors":authors,
                                        "classification": classification,
                                        "title": title,
-                                       })
+                                       "dataset_shard": dataset_shard,
+                                        })
                         counter += 1
+                        claims_count += 1
                     doc_chunks, counter = _finalize_doc_chunks(chunks, doc_buffer, sample_enabled=sample_enabled)
+                    if manifest_writer:
+                        manifest_writer.write(
+                            title=title,
+                            cpc=classification_cpc or classification,
+                            abstract=abstract_text,
+                            claims_count=claims_count,
+                            filing_date=filing_date,
+                            source=_google_patent_source(doc_id, kind),
+                        )
                     #temp_dict = {"doc_id": "", "section": "claim", "authors": "bleb bleb bleb"}
                     #temp_list=[doc_id, section, authors, text, ] 
                     #big_list.append(temp_list)
@@ -3233,7 +3392,9 @@ def bulk_dataset_download(
             print("[done] Completed processing all subdocuments (zip).")
             _flush_meta_mismatches()
             if return_chunks:
+                _close_manifest_writer()
                 return chunks
+            _close_manifest_writer()
             return None
                     
                 # Inspect structure of the first subdoc, then stop

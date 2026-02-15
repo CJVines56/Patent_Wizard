@@ -11,6 +11,9 @@ def get_client():
 '''
 import io
 import os
+import re
+import uuid
+import hashlib
 from pathlib import Path
 
 import lmdb
@@ -27,6 +30,10 @@ LMDB_PATH_768_F16 = Path(os.environ.get("LMDB_PATH_768_F16", _LMDB_DIR / "colber
 LMDB_PATH_768_I8 = Path(os.environ.get("LMDB_PATH_768_I8", _LMDB_DIR / "colbert_768_i8.lmdb"))
 LMDB_PATH_128_F32 = Path(os.environ.get("LMDB_PATH_128_F32", _LMDB_DIR / "colbert_128_f32.lmdb"))
 LMDB_PATH_128_F16 = Path(os.environ.get("LMDB_PATH_128_F16", _LMDB_DIR / "colbert_128_f16.lmdb"))
+LMDB_SHARD_ROOT_768_F16 = Path(
+    os.environ.get("LMDB_SHARD_ROOT_768_F16", _LMDB_DIR / "colbert_768_f16_shards")
+)
+LMDB_SHARDING_MODE = os.environ.get("LMDB_SHARDING_MODE", "util").strip().lower()
 LMDB_MAP_SIZE = int(os.environ.get("LMDB_MAP_SIZE", str(10 * 1024**3)))
 LMDB_MAP_GROW_GB = int(os.environ.get("LMDB_MAP_GROW_GB", "10"))
 LMDB_VECTOR_DTYPE = os.environ.get(
@@ -43,6 +50,57 @@ LMDB_VARIANT_PATHS = {
     "128_f32": LMDB_PATH_128_F32,
     "128_f16": LMDB_PATH_128_F16,
 }
+LMDB_WRITE_VARIANTS = {
+    v.strip().lower() for v in os.environ.get("LMDB_WRITE_VARIANTS", "768_f16").split(",") if v.strip()
+}
+
+
+def _util_shard_from_doc_id(doc_id: str | None) -> str | None:
+    if not doc_id:
+        return None
+    digits = "".join(ch for ch in str(doc_id) if ch.isdigit())
+    if len(digits) < 5:
+        return None
+    return f"UTIL{digits[:5]}"
+
+
+def _normalize_util_shard(value: str | None) -> str | None:
+    if not value:
+        return None
+    m = re.search(r"UTIL\d{5}", str(value).upper())
+    return m.group(0) if m else None
+
+
+def resolve_lmdb_path(variant: str, *, doc_id: str | None = None, dataset_shard: str | None = None) -> Path:
+    variant = variant.lower()
+    if variant not in LMDB_VARIANT_PATHS:
+        raise ValueError(f"Unknown LMDB variant: {variant}")
+    if variant == "768_f16" and LMDB_SHARDING_MODE == "util":
+        shard = _normalize_util_shard(dataset_shard) or _util_shard_from_doc_id(doc_id)
+        if shard:
+            return LMDB_SHARD_ROOT_768_F16 / shard / "colbert_768_f16.lmdb"
+    return LMDB_VARIANT_PATHS[variant]
+
+
+def _stable_uuid(kind: str, key: str) -> str:
+    token = f"patent-wizard:{kind}:{(key or '').strip()}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, token))
+
+
+def _claim_identity(emb: dict) -> str:
+    claim_id = str(emb.get("claim_id") or "").strip()
+    if claim_id:
+        return claim_id
+    doc_id = str(emb.get("doc_id") or "").strip()
+    claim_number = emb.get("claim_number")
+    if doc_id and claim_number is not None:
+        return f"{doc_id}-CLM-{claim_number}"
+    text = str(emb.get("text") or emb.get("chunk") or "").strip()
+    if doc_id and text:
+        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+        return f"{doc_id}-TXT-{digest}"
+    digest = hashlib.sha1(repr(sorted(emb.items())).encode("utf-8")).hexdigest()[:16]
+    return f"CLAIM-{digest}"
 
 
 def _open_lmdb_env(path: Path, *, readonly: bool = False) -> lmdb.Environment:
@@ -100,7 +158,10 @@ def _write_lmdb_vectors(
 
 
 def load_colbert_from_lmdb(lmdb_path: Path | str, key: str) -> np.ndarray | None:
-    env = _open_lmdb_env(Path(lmdb_path), readonly=True)
+    path = Path(lmdb_path)
+    if not path.exists():
+        return None
+    env = _open_lmdb_env(path, readonly=True)
     try:
         with env.begin(write=False) as txn:
             payload = txn.get(str(key).encode("utf-8"))
@@ -176,11 +237,7 @@ def ensure_collection(client):
 
 def store_embeddings(embeddings):
     client = get_client()
-    lmdb_envs: dict[str, lmdb.Environment] = {}
-    lmdb_env_legacy: lmdb.Environment | None = None
-    if WRITE_LMDB:
-        lmdb_envs = {name: _open_lmdb_env(path) for name, path in LMDB_VARIANT_PATHS.items()}
-        lmdb_env_legacy = _open_lmdb_env(LMDB_PATH)
+    lmdb_envs_by_path: dict[Path, lmdb.Environment] = {}
     try:
         ensure_collection(client)
         claim_collection = client.collections.get("Claim")
@@ -230,7 +287,10 @@ def store_embeddings(embeddings):
 
         if patent_by_doc:
             patent_objects = [
-                DataObject(properties=props)
+                DataObject(
+                    properties=props,
+                    uuid=_stable_uuid("patent", str(props.get("doc_id", ""))),
+                )
                 for props in patent_by_doc.values()
             ]
             result = patent_collection.data.insert_many(patent_objects)
@@ -241,11 +301,12 @@ def store_embeddings(embeddings):
             batch = embeddings[start:start + WEAVIATE_BATCH_SIZE]
             objects = []
             for i, emb in enumerate(batch):
+                claim_identity = _claim_identity(emb)
                 claim_number = emb.get("claim_number")
                 if isinstance(claim_number, str) and claim_number.isdigit():
                     claim_number = int(claim_number)
                 props = {
-                    "claim_id": emb.get("claim_id", ""),
+                    "claim_id": emb.get("claim_id", "") or claim_identity,
                     "claim_type": emb.get("claim_type", ""),
                     "doc_id": emb.get("doc_id", ""),
                     "text": emb.get("text") or emb.get("chunk", ""),
@@ -254,23 +315,29 @@ def store_embeddings(embeddings):
                     props["claim_number"] = claim_number
                 dense_vec = emb.get("embedding", [])
                 vecs = {"colbert": [dense_vec] if dense_vec else []}
-                objects.append(DataObject(properties=props, vector=vecs))
+                objects.append(
+                    DataObject(
+                        properties=props,
+                        vector=vecs,
+                        uuid=_stable_uuid("claim", claim_identity),
+                    )
+                )
 
             result = claim_collection.data.insert_many(objects)
             if result.has_errors:
                 print(f"[warn] batch insert had {len(result.errors)} error(s)")
 
             if WRITE_LMDB:
-                lmdb_rows_by_variant: dict[str, list[tuple[str, list]]] = {
-                    name: [] for name in lmdb_envs.keys()
-                }
-                lmdb_rows_legacy: list[tuple[str, list]] = []
-                for idx, obj_id in result.uuids.items():
-                    emb = batch[idx]
+                lmdb_rows_by_path: dict[Path, list[tuple[str, list]]] = {}
+                for emb in batch:
+                    claim_key = _claim_identity(emb)
+                    doc_id = emb.get("doc_id")
+                    dataset_shard = emb.get("dataset_shard")
                     colbert_variants = emb.get("colbert_variants") or {}
                     if colbert_variants:
                         for name, vecs in colbert_variants.items():
-                            if name not in lmdb_rows_by_variant:
+                            name = str(name).lower()
+                            if name not in LMDB_WRITE_VARIANTS:
                                 continue
                             size = getattr(vecs, "size", None)
                             if size is None:
@@ -279,7 +346,13 @@ def store_embeddings(embeddings):
                                 except Exception:
                                     size = 0
                             if size:
-                                lmdb_rows_by_variant[name].append((str(obj_id), vecs))
+                                key = str(claim_key)
+                                lmdb_path = resolve_lmdb_path(
+                                    name,
+                                    doc_id=doc_id,
+                                    dataset_shard=dataset_shard,
+                                )
+                                lmdb_rows_by_path.setdefault(lmdb_path, []).append((key, vecs))
                     else:
                         colbert_vectors = emb.get("colbert")
                         if colbert_vectors is not None:
@@ -290,19 +363,25 @@ def store_embeddings(embeddings):
                                 except Exception:
                                     size = 0
                             if size:
-                                lmdb_rows_legacy.append((str(obj_id), colbert_vectors))
-                for name, rows in lmdb_rows_by_variant.items():
+                                key = str(claim_key)
+                                lmdb_path = resolve_lmdb_path(
+                                    "768_f16",
+                                    doc_id=doc_id,
+                                    dataset_shard=dataset_shard,
+                                )
+                                lmdb_rows_by_path.setdefault(lmdb_path, []).append((key, colbert_vectors))
+                for lmdb_path, rows in lmdb_rows_by_path.items():
                     if rows:
-                        _write_lmdb_vectors(lmdb_envs[name], rows)
-                if lmdb_rows_legacy and lmdb_env_legacy is not None:
-                    _write_lmdb_vectors(lmdb_env_legacy, lmdb_rows_legacy)
+                        env = lmdb_envs_by_path.get(lmdb_path)
+                        if env is None:
+                            env = _open_lmdb_env(lmdb_path)
+                            lmdb_envs_by_path[lmdb_path] = env
+                        _write_lmdb_vectors(env, rows)
 
         print(f"Uploaded {len(embeddings)} claims to database.")
     finally:
-        for env in lmdb_envs.values():
+        for env in lmdb_envs_by_path.values():
             env.close()
-        if lmdb_env_legacy is not None:
-            lmdb_env_legacy.close()
         client.close()
 
 '''
