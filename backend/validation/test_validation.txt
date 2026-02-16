@@ -1,0 +1,10 @@
+Question,Answer
+"Are there any patents that have been filed related to a meat processing assembly?",
+"For patents you have access to, when is the earliest filing date for patents related to Chromatographic reader devices?",
+"Are there any patents that have been filed related to a combined cycle power generation facility?",
+"For patents you have access to, when is the earliest filing date for patents related to capacitive strain sensors?",
+"What are the claims in Bryce Hobbs's patent for the additive manufacturing a golf club?",
+"What are the claims in Akihiro Unno's patent for a switching power supply circuit/system?",
+"Are there any patents that have been filed related to a Hemostatic biopsy tract article?",
+"For patents you have access to, when is the earliest filing date for patents related to a cooking tool?",
+"What are the claims in Sheng Wang's patent for a Boron Neutron capture therapy system?",

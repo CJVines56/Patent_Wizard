@@ -1,5 +1,0 @@
-clean_question,unclean_question
-"Are there any patents that have been filed related to a meat processing assembly?","any patents filed re: meat processin assembly??"
-"Are there any patents that have been filed related to a combined cycle power generation facility?","is there patents filed about combined cycle power gen facility or no"
-"Are there any patents that have been filed related to the segmentation of data in a hybrid cloud?","patents on segmantation of data in hybrid cloud??"
-"Are there any patents that have been filed related to methods for measuring eddy currents?","any patent filed for method measuring eddy current"
