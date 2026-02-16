@@ -4,6 +4,7 @@ from tools import retriever_tool
 from nodes import query_clean, query_route, generate_answer, store_contexts
 from nodes2 import metadata_filter_node
 from patent_miner_classes import metadatastate
+from tools import route_from_query
 
 
 def build_graph():
@@ -15,22 +16,22 @@ def build_graph():
     workflow = StateGraph(MessagesState, output_schema=metadatastate)
 
     workflow.add_node("query_clean", query_clean)
-    workflow.add_node("metadata_filter", metadata_filter_node)
     workflow.add_node("query_route", query_route)
+    workflow.add_node("metadata_filter", metadata_filter_node)
     workflow.add_node("retrieve", ToolNode([retriever_tool]))
     workflow.add_node("store_contexts", store_contexts)      # NEW
     workflow.add_node("generate_answer", generate_answer)
 
     workflow.add_edge(START, "query_clean")
-    workflow.add_edge("query_clean", "metadata_filter")         # NEW
-    workflow.add_edge("metadata_filter", "query_route")  #NEW
+    workflow.add_edge("query_clean", "query_route")  #NEW
 
     workflow.add_conditional_edges(
-        "query_route",
-        tools_condition,
-        {"tools": "retrieve", END: END},
-    )
+    "query_route",
+    route_from_query,
+    {"metadatafilter": "metadatafilter", END: END},
+)
 
+    workflow.add_edge("metadatafilter", "retrieve")
     workflow.add_edge("retrieve", "store_contexts")          # changed
     workflow.add_edge("store_contexts", "generate_answer")   # changed
     workflow.add_edge("generate_answer", END)

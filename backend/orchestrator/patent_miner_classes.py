@@ -43,3 +43,8 @@ class metadatastate(TypedDict):
         contexts: Optional[List[Dict[str, Any]]] = None
         joined_context: Optional[str] = None
         answer: Optional[str] = None
+
+# Retrieval state #
+class retrievalstate(TypedDict):
+    retrieval_required: Optional[str] = None
+    routing_decision_raw: Optional[str] = None

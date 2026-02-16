@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
 from langchain.tools import tool
 from vector_store import vector_storage
+from langgraph.graph import MessagesState, END
+from patent_miner_classes import retrievalstate
 
 
 ## Retrieval tool ##
@@ -43,3 +45,7 @@ def retrieve_context(query: str, where_filter: Optional[Dict[str, Any]] = None):
     }
 
 retriever_tool = retrieve_context
+
+
+def route_from_query(state: retrievalstate):
+    return "metadatafilter" if state[retrieval_required] else END

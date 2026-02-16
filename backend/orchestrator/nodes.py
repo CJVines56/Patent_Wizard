@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 from nodes2 import metadatastate
 from langchain_openai import ChatOpenAI
 from langgraph.graph import MessagesState
-from patent_miner_classes import CleanedQuery
+from patent_miner_classes import CleanedQuery, retrievalstate
 from tools import retriever_tool
 from dotenv import load_dotenv
 
@@ -44,28 +44,58 @@ def query_clean(state: MessagesState):
 
 ## Query Routing Node ##
 
-def query_route(state: MessagesState):   ## When finalized -> route this part to metadata extraction, then response generation
-    
-    """Call the model to generate a response based on the current state. Given
-    the question, it will decide to retrieve using the retriever tool, or simply respond to the user.
-    If the model invokes the retriever tool, it also receives the respective metadata filter for the query."
-    """
+def query_route(state: MessagesState) -> retrievalstate:
+    user_text = state["messages"][-1]["content"]
 
-    where_filter = state.get("chroma_filter")  # set by metadata_filter_node
-
-    sys = (
-        "If you call the retrieval tool, you MUST pass:\n"
-        f'- query: the user question\n- where_filter: {where_filter}\n'
-        "If where_filter is null/empty, omit it."
+    prompt = (
+        "You are a router for a RAG system.\n"
+        "Decide if answering the user requires retrieving external context.\n\n"
+        "Return ONLY valid JSON with exactly this schema:\n"
+        '{"needs_retrieval": true|false}\n\n'
+        "Rules:\n"
+        "- needs_retrieval=true if the question depends on domain-specific, private, or unknown info.\n"
+        "- needs_retrieval=false if it is purely conversational, generic, or can be answered without the corpus.\n\n"
+        f"User question:\n{user_text}\n"
     )
 
-    response = (
-        nodes_model
-        .bind_tools([retriever_tool]).invoke([{"role": "system", "content": sys}] + state["messages"])
-    )
+    resp = nodes_model.invoke(prompt)
+    text = getattr(resp, "content", str(resp)).strip()
 
-    return {"messages": [response]}
+    needs_retrieval = True  # safe default
+    try:
+        needs_retrieval = bool(json.loads(text).get("needs_retrieval"))
+    except Exception:
+        # If the model outputs invalid JSON, default to retrieval to avoid false negatives.
+        needs_retrieval = True
 
+    return {
+        "retrieval_required": needs_retrieval,
+        "routing_decision_raw": text,
+    }
+
+
+## Retrieval Node ##
+
+# def retrieval_node(state: metadatastate) -> MessagesState:
+#     """Call the model to generate a response based on the current state. 
+#     Given the question, it will retrieve using the retriever tool.
+#     If the model invokes the retriever tool, it also receives the respective metadata filter for the query."
+#     """
+
+#     where_filter = state["chroma_filter"]  # set by metadata_filter_node
+
+#     sys = (
+#         "If you call the retrieval tool, you MUST pass:\n"
+#         f'- query: the user question\n- where_filter: {where_filter}\n'
+#         "If where_filter is null/empty, omit it."
+#     )
+
+#     response = (
+#         nodes_model
+#         .bind_tools([retriever_tool]).invoke([{"role": "system", "content": sys}] + state["cleaned_query"])
+#     )
+
+#     return {"messages": [response]}
 
 ## Context and cleaned query Storage Node ##
 
@@ -94,8 +124,8 @@ def store_contexts(state: MessagesState)-> metadatastate:
 
     return {
         "cleaned_query": state["messages"][1].content,
-        "contexts": payload.get("chunks", []) or [],
-        "joined_context": payload.get("joined_text", "") or "",
+        "contexts": state.get("chunks", []) or [],
+        "joined_context": state.get("joined_text", "") or "",
     }
 
 ## Response Generation Node ##
