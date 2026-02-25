@@ -8,23 +8,16 @@ warnings.filterwarnings(
 )
 
 import time
-import pdb
 from typing import Any, Dict, List
 
 import pandas as pd
 import random
 from datasets import Dataset
 from dotenv import load_dotenv
-
-from ragas import evaluate
-from ragas.metrics import faithfulness, answer_relevancy
-from custom_metric import MetadataAccuracy, CleanAccuracy
-
 from langchain_openai import ChatOpenAI
 from langchain_core.callbacks.base import BaseCallbackHandler
 
 from graph import compile_graph
-from langchain_huggingface import HuggingFaceEmbeddings
 from langsmith.run_helpers import trace
 
 load_dotenv()
@@ -102,7 +95,7 @@ def main():
 
     try:
         llm = ChatOpenAI(
-            model="protected.gemini-2.5-flash",
+            model="protected.gpt-4.1",
             temperature=0.2,
             callbacks=[ragas_limiter],
         )

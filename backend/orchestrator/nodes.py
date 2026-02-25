@@ -1,12 +1,13 @@
 import os
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from nodes2 import metadatastate
 from langchain_openai import ChatOpenAI
 from langgraph.graph import MessagesState
 from patent_miner_classes import CleanedQuery, retrievalstate
-from tools import retriever_tool
+from vector_store import vector_storage
 from dotenv import load_dotenv
+import pdb
 
 load_dotenv()
 
@@ -45,7 +46,7 @@ def query_clean(state: MessagesState):
 ## Query Routing Node ##
 
 def query_route(state: MessagesState) -> retrievalstate:
-    user_text = state["messages"][-1]["content"]
+    user_text = state["messages"][-1].content
 
     prompt = (
         "You are a router for a RAG system.\n"
@@ -76,56 +77,38 @@ def query_route(state: MessagesState) -> retrievalstate:
 
 ## Retrieval Node ##
 
-# def retrieval_node(state: metadatastate) -> MessagesState:
-#     """Call the model to generate a response based on the current state. 
-#     Given the question, it will retrieve using the retriever tool.
-#     If the model invokes the retriever tool, it also receives the respective metadata filter for the query."
-#     """
+def retrieve_context(state: metadatastate, where_filter: Optional[Dict[str, Any]] = None) -> metadatastate:
+    """Retrieve information to help answer a query, optionally using metadata filters.
 
-#     where_filter = state["chroma_filter"]  # set by metadata_filter_node
-
-#     sys = (
-#         "If you call the retrieval tool, you MUST pass:\n"
-#         f'- query: the user question\n- where_filter: {where_filter}\n'
-#         "If where_filter is null/empty, omit it."
-#     )
-
-#     response = (
-#         nodes_model
-#         .bind_tools([retriever_tool]).invoke([{"role": "system", "content": sys}] + state["cleaned_query"])
-#     )
-
-#     return {"messages": [response]}
-
-## Context and cleaned query Storage Node ##
-
-TOOL_NAME = "retrieve_context"  # matches tools.py
-
-def store_contexts(state: MessagesState)-> metadatastate:
-
-    for m in reversed(state["messages"]):
-        if getattr(m, "type", None) == "tool" and getattr(m, "name", None) == TOOL_NAME:
-            tool_msg = m
-            break
+    Args:
+        query: Search terms to look for
+        where_filter: Filter for database search
+    """
+    search_kwargs = {"k": 5}
+    where_filter = state['chroma_filter']
+    if where_filter:
+        # Chroma / langchain-chroma supports `filter` in search_kwargs in many setups.
+        # If your environment expects `where`, change the key accordingly.
+        search_kwargs["filter"] = where_filter
+    retriever = vector_storage.as_retriever(search_type="similarity", 
+                                            search_kwargs=search_kwargs,)
     
-    if tool_msg is None:
-        return {
-            "cleaned_query": state["messages"][1].content,
-            "contexts": [],
-            "joined_context": "",
+    question=state['cleaned_query']
+    context = retriever.invoke(question)
+    
+    chunks: List[Dict[str, Any]] = [
+        {
+            "text": d.page_content,
+            "metadata": dict(d.metadata) if d.metadata else {},
         }
-    tool_content = tool_msg.content
+        for d in context
+    ]
 
-    
-    if isinstance(tool_content, dict):
-        payload = tool_content
-    else:
-        payload = json.loads(tool_content)  # your tool returns JSON string content
+    joined_context = "\n\n".join([c["text"] for c in chunks])
 
     return {
-        "cleaned_query": state["messages"][1].content,
-        "contexts": state.get("chunks", []) or [],
-        "joined_context": state.get("joined_text", "") or "",
+        "joined_context": joined_context,
+        "contexts": chunks,
     }
 
 ## Response Generation Node ##
