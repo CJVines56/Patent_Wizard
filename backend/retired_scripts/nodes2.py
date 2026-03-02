@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from langgraph.graph import MessagesState
-from patent_miner_classes import QueryMetadata, metadatastate
+#from patent_miner_classes import QueryMetadata, metadatastate
 
 load_dotenv()
 

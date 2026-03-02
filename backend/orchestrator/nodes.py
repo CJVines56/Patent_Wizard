@@ -1,145 +1,140 @@
-import os
 import json
 from typing import Any, Dict, Optional, List
-from nodes2 import metadatastate
-from langchain_openai import ChatOpenAI
-from langgraph.graph import MessagesState
-from patent_miner_classes import CleanedQuery, retrievalstate
-from vector_store import vector_storage
+
 from dotenv import load_dotenv
-import pdb
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import AIMessage
+from langgraph.graph import MessagesState
+
+from patent_miner_classes import retrievalstate
+from vector_store import vector_storage
 
 load_dotenv()
 
+N_MEMORY = 10
 
 nodes_model = ChatOpenAI(
     model="protected.gpt-4.1",
     temperature=0.2,
 )
 
-#clean_structured_llm = nodes_model.with_structured_output(CleanedQuery)
-
-## Query Cleaning Node ##
-
-
 clean_prompt = (
-    "You are a patent search and retrieval assistant. \n"
-    "Given a user question, detect and correct grammatical errors and misspellings. \n"
-    "If the question contains ambiguous or vague words/phrases - rewrite it concisely while preserving meaning. \n"
-    "If the question contains no errors or ambiguity - do not rewite it. \n"
+    "You are a patent search and retrieval assistant.\n"
+    "Given a user question, detect and correct grammatical errors and misspellings.\n"
+    "If the question contains ambiguous or vague words/phrases, rewrite it concisely while preserving meaning.\n"
+    "If the question contains no errors or ambiguity, do not rewrite it.\n"
+    "Return ONLY the cleaned question text.\n"
     "Here is the user question: {question}"
 )
 
 
-def query_clean(state: MessagesState):
-    """Clean the original user question."""
-    messages = state["messages"]
-    question = messages[0].content
-    prompt = clean_prompt.format(question=question)
-    
-    cleaned_q = nodes_model.invoke([{"role": "user", "content": prompt}])
-    return {"messages": [cleaned_q],"cleaned_query": cleaned_q}
+def _trim_messages(messages, n=N_MEMORY):
+    return messages[-n:] if messages else messages
 
-## Query Routing Node ##
+
+def query_clean(state: MessagesState) -> dict:
+    """
+    Clean the latest user question.
+    IMPORTANT: Do not overwrite `messages` (we keep it as chat history).
+    """
+    question = state["messages"][-1].content
+    prompt = clean_prompt.format(question=question)
+
+    cleaned_text = nodes_model.invoke([{"role": "user", "content": prompt}]).content.strip()
+    return {"cleaned_query": cleaned_text}
+
 
 def query_route(state: MessagesState) -> retrievalstate:
-    user_text = state["messages"][-1].content
+    user_text = state.get("cleaned_query") or state["messages"][-1].content
 
     prompt = (
         "You are a router for a Patent search and retrieval RAG system.\n"
-        f"Given the question: \n{user_text}\n"
+        f"Given the question:\n{user_text}\n\n"
         "Decide if answering the user requires retrieving context from the RAG patent database.\n\n"
         "Return ONLY valid JSON with exactly this schema:\n"
-        '{"needs_retrieval": true|false}\n\n'
+        '{"needs_retrieval": true|false}\n'
         "Rules:\n"
         "- needs_retrieval=true if the question depends on patent information.\n"
-        "- needs_retrieval=false if it is purely conversational, generic, or can be answered without the patent corpus.\n\n"
+        "- needs_retrieval=false if it is purely conversational, generic, or can be answered without the patent corpus.\n"
     )
 
-    resp = nodes_model.invoke(prompt)
-    text = getattr(resp, "content", str(resp)).strip()
+    resp = nodes_model.invoke([{"role": "user", "content": prompt}])
+    text = (resp.content or "").strip()
 
-    needs_retrieval = True  # safe default
+    needs_retrieval = True
     try:
         needs_retrieval = bool(json.loads(text).get("needs_retrieval"))
     except Exception:
-        # If the model outputs invalid JSON, default to retrieval to avoid false negatives.
         needs_retrieval = True
 
-    return {
-        "retrieval_required": needs_retrieval,
-        "routing_decision_raw": text,
-    }
+    return {"retrieval_required": needs_retrieval, "routing_decision_raw": text}
 
 
-## Retrieval Node ##
-
-def retrieve_context(state: metadatastate, where_filter: Optional[Dict[str, Any]] = None) -> metadatastate:
-    """Retrieve information to help answer a query, optionally using metadata filters.
-
-    Args:
-        query: Search terms to look for
-        where_filter: Filter for database search
+def retrieve_context(state: MessagesState, where_filter: Optional[Dict[str, Any]] = None) -> dict:
+    """
+    Retrieval uses ONLY the latest cleaned question (not full chat history).
     """
     search_kwargs = {"k": 5}
-    where_filter = state['chroma_filter']
-    if where_filter:
-        # Chroma / langchain-chroma supports `filter` in search_kwargs in many setups.
-        # If your environment expects `where`, change the key accordingly.
-        search_kwargs["filter"] = where_filter
-    retriever = vector_storage.as_retriever(search_type="similarity", 
-                                            search_kwargs=search_kwargs,)
-    
-    question=state['cleaned_query']
-    context = retriever.invoke(question)
-    
-    chunks: List[Dict[str, Any]] = [
-        {
-            "text": d.page_content,
-            "metadata": dict(d.metadata) if d.metadata else {},
-        }
-        for d in context
-    ]
+    retriever = vector_storage.as_retriever(
+        search_type="similarity",
+        search_kwargs=search_kwargs,
+    )
 
+    question = state.get("cleaned_query") or state["messages"][-1].content
+    docs = retriever.invoke(question)
+
+    chunks: List[Dict[str, Any]] = [
+        {"text": d.page_content, "metadata": dict(d.metadata) if d.metadata else {}}
+        for d in docs
+    ]
     joined_context = "\n\n".join([c["text"] for c in chunks])
 
-    return {
-        "joined_context": joined_context,
-        "contexts": chunks,
-    }
+    return {"joined_context": joined_context, "contexts": chunks}
 
-## Response Generation Node 1 ##
 
 rusty_prompt = (
     "You are a patent search and retrieval assistant.\n"
-    "Given the question: {question}"
-    "Use the following retrieved context to answer it:\n"
-    "{context}"
-    "Use three sentences maximum to respond and keep the answer concise.\n"
-    "If no context is provided. Respond that the provided context is not relevant to the question.\n"
+    "Question: {question}\n\n"
+    "Retrieved context:\n{context}\n\n"
+    "Use three sentences maximum. If the context is not relevant, say so.\n"
 )
 
-def rusty_answer(state: metadatastate)-> metadatastate:
-    """Generate an answer."""
-    question = state["cleaned_query"]
-    context = state["joined_context"]
+def rusty_answer(state: MessagesState) -> dict:
+    question = state.get("cleaned_query") or state["messages"][-1].content
+    context = state.get("joined_context") or ""
     prompt = rusty_prompt.format(question=question, context=context)
-    response = nodes_model.invoke([{"role": "user", "content": prompt}])
-    return {"answer": [response.content]}
 
+    # Conversational memory: include last N messages as context
+    history = _trim_messages(state["messages"], N_MEMORY)
+    response_text = nodes_model.invoke(history + [{"role": "user", "content": prompt}]).content
 
-## Response Generation Node 2 ##
+    return {"answer": response_text}
+
 
 general_prompt = (
-    "You are a patent search and retrieval assistant.\n"
-    "Given the question: {question}"
-    "Respond the user consicely. If you do not know - just say that you do not know. \n"
-    "Use three sentences maximum to respond."
+    "You are a helpful assistant.\n"
+    "Answer concisely in <= 3 sentences. If you don't know, say you don't know.\n"
+    "Question: {question}"
 )
 
-def general_answer(state: metadatastate)-> metadatastate:
-    """Generate an answer."""
-    question = state["cleaned_query"]
+def general_answer(state: MessagesState) -> dict:
+    question = state.get("cleaned_query") or state["messages"][-1].content
     prompt = general_prompt.format(question=question)
-    response = nodes_model.invoke([{"role": "user", "content": prompt}])
-    return {"answer": [response.content]}
+
+    history = _trim_messages(state["messages"], N_MEMORY)
+    response_text = nodes_model.invoke(history + [{"role": "user", "content": prompt}]).content
+
+    return {"answer": response_text}
+
+
+def append_answer_to_messages(state: MessagesState) -> dict:
+    """
+    Append final answer into chat history and trim to last N messages.
+    This is what makes assistant replies available for future turns via the checkpointer.
+    """
+    answer_text = state.get("answer", "")
+    if not isinstance(answer_text, str):
+        answer_text = str(answer_text)
+
+    new_messages = list(state["messages"]) + [AIMessage(content=answer_text)]
+    return {"messages": new_messages[-N_MEMORY:]}

@@ -5,6 +5,7 @@ import pandas as pd
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
+from langgraph.checkpoint.memory import InMemorySaver
 
 # ----------------- CONFIG -----------------
 MD_DIR = "patents/markdown"          # folder containing .md files

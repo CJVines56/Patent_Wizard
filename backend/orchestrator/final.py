@@ -9,9 +9,9 @@ warnings.filterwarnings(
 
 import time
 from typing import Any, Dict, List
+import random
 
 import pandas as pd
-import random
 from datasets import Dataset
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -46,55 +46,41 @@ class RPMLimiterCallback(BaseCallbackHandler):
         self._sleep_if_needed()
 
 
-def run_one_with_graph(app, question: str, app_rpm_budget: int = 60) -> dict:
-    # Graph-level throttle (graph triggers multiple Gemini calls internally) [1][2][3]
+def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int = 60) -> dict:
+    # Graph-level throttle (graph triggers multiple calls internally)
     time.sleep(60.0 / max(app_rpm_budget, 1))
 
     try:
-
         with trace(
-        name="langgraph_app_invoke",
-        inputs={"question": question},
-        project_name=os.getenv("LANGSMITH_PROJECT", "default"),
-    ):
-            
-            final_state = app.invoke({"messages": [{"role": "user", "content": question}]})
-            answer = final_state["answer"]
+            name="langgraph_app_invoke",
+            inputs={"question": question, "thread_id": thread_id},
+            project_name=os.getenv("LANGSMITH_PROJECT", "default"),
+        ):
+            config = {"configurable": {"thread_id": thread_id}}
+
+            final_state = app.invoke(
+                {"messages": [{"role": "user", "content": question}]},
+                config=config,
+            )
+
+            answer = final_state.get("answer", "")
             if isinstance(answer, list):
                 answer = "\n".join(str(x) for x in answer)
             elif not isinstance(answer, str):
                 answer = str(answer)
-            cleaned_q = final_state["cleaned_query"]
-            metadata = final_state["metadata"]
-            raw_contexts: List[Dict[str, Any]] = final_state.get("contexts") or []
-            contexts: List[str] = [
-                c.get("text", "") for c in raw_contexts if isinstance(c, dict) and c.get("text")
-            ]
-        return {
-        "response": answer
-    }
+
+            return {"response": answer}
 
     except Exception as e:
         print(f"Error running graph for question '{question}': {e}")
-        return {"question": question, "answer": "", "contexts": [], "metadata": ""}
-
-
-def load_questions(csv_path: str, question_col: str) -> list[str]:
-    try:
-        df = pd.read_csv(csv_path)
-        if question_col not in df.columns:
-            raise ValueError(f"Column '{question_col}' not found. Available: {list(df.columns)}")
-        return df[question_col].dropna().astype(str).tolist()
-    except Exception as e:
-        print(f"Error loading questions from '{csv_path}': {e}")
-        return []
+        return {"response": ""}
 
 
 def main():
     ragas_limiter = RPMLimiterCallback(rpm=90)
 
     try:
-        llm = ChatOpenAI(
+        _llm = ChatOpenAI(
             model="protected.gpt-4.1",
             temperature=0.2,
             callbacks=[ragas_limiter],
@@ -103,9 +89,12 @@ def main():
         print(f"Error initializing LLM: {e}")
         return
 
-    app = compile_graph(print_mermaid=False)
+    app = compile_graph(print_mermaid=True)
 
     quit_commands = {"q", "quit", "exit"}
+
+    # For dev CLI: a single fixed session (thread) for the whole run
+    thread_id = "dev-session-1"
 
     while True:
         try:
@@ -115,14 +104,15 @@ def main():
             if question.lower() in quit_commands:
                 break
 
-            answer = run_one_with_graph(app, question, app_rpm_budget=60)
-            print("\nAnswer:\n", answer)
+            result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+            print("\nAnswer:\n", result["response"])
 
         except KeyboardInterrupt:
             print("\nExiting...")
             break
         except Exception as e:
             print(f"Error: {e}")
+
 
 if __name__ == "__main__":
     main()
