@@ -7,6 +7,15 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 import torch.nn.functional as F
 from backend.app.services.download import rich_to_plain
+from backend.app.vector_config import (
+    ENABLED_COLBERT_VARIANTS,
+    PRIMARY_COLBERT_VARIANT,
+    PROJECTION_MODE,
+    PROJECTION_PATH,
+    TOKEN_VECTOR_DIM,
+    TOKEN_VECTOR_DTYPE,
+    assert_128_variant,
+)
 from pathlib import Path
 import json
 import gzip
@@ -14,6 +23,7 @@ import os
 import re
 import warnings
 from typing import Any
+import numpy as np
 
 warnings.filterwarnings(
     "ignore",
@@ -90,148 +100,133 @@ model = AutoModel.from_pretrained(
 print("Model and tokenizer loaded successfully from scratch!")                                           #
 
 REBALANCE_OVERLAP_TOKENS = int(os.environ.get("REBALANCE_OVERLAP_TOKENS", "30"))
-
-TOKEN_VECTOR_DIM = int(os.environ.get("TOKEN_VECTOR_DIM", "768"))
-TOKEN_VECTOR_DTYPE = os.environ.get("TOKEN_VECTOR_DTYPE", "float16").lower()
-USE_TOKEN_PROJECTION = bool(
-    os.environ.get("USE_TOKEN_PROJECTION", "0") in {"1", "true", "True", "yes", "YES"}
-)
-USE_COLBERT_CHECKPOINT = bool(
-    os.environ.get("USE_COLBERT_CHECKPOINT", "0") in {"1", "true", "True", "yes", "YES"}
-)
 COLBERT_DOC_MAXLEN = int(os.environ.get("COLBERT_DOC_MAXLEN", "180"))
 COLBERT_QUERY_MAXLEN = int(os.environ.get("COLBERT_QUERY_MAXLEN", "32"))
-COLBERT_VARIANTS = os.environ.get(
-    "COLBERT_VARIANTS",
-    "768_f16",
-).lower()
+COLBERT_VARIANTS = ",".join(sorted(ENABLED_COLBERT_VARIANTS))
 
-if TOKEN_VECTOR_DIM not in {768, 128}:
-    raise ValueError("TOKEN_VECTOR_DIM must be 768 or 128")
-if TOKEN_VECTOR_DTYPE not in {"float16", "float32"}:
-    raise ValueError("TOKEN_VECTOR_DTYPE must be 'float16' or 'float32'")
-if TOKEN_VECTOR_DIM == 128 and not USE_TOKEN_PROJECTION:
-    raise ValueError("TOKEN_VECTOR_DIM=128 requires USE_TOKEN_PROJECTION=True")
-
-_TOKEN_PROJECTION = None  # Experimental stand-in for a ColBERT head; replace later.
-_COLBERT_CHECKPOINT = None
-_COLBERT_CKPT_LOAD_ATTEMPTED = False
-_COLBERT_CKPT_WARNED = False
+_PROJECTION_MATRIX: torch.Tensor | None = None
+_PROJECTION_INFO: dict[str, str | tuple[int, int]] = {}
 
 
-def _coerce_token_matrix(obj: Any) -> torch.Tensor | None:
-    if obj is None:
-        return None
-    if isinstance(obj, (list, tuple)):
-        if not obj:
-            return None
-        # ColBERT APIs often return a batch container; unwrap first entry.
-        return _coerce_token_matrix(obj[0])
+def _extract_projection_tensor(obj: Any) -> torch.Tensor:
     if isinstance(obj, torch.Tensor):
-        t = obj
-    else:
-        try:
-            t = torch.as_tensor(obj)
-        except Exception:
-            return None
-    if t.dim() == 3 and t.shape[0] == 1:
-        t = t[0]
-    if t.dim() != 2:
-        return None
-    return t.to(torch.float32)
+        return obj
+    if isinstance(obj, dict) and "state_dict" in obj and isinstance(obj["state_dict"], dict):
+        obj = obj["state_dict"]
+    if isinstance(obj, dict):
+        preferred = [
+            "projection",
+            "projection_weight",
+            "projection.weight",
+            "linear.weight",
+            "proj.weight",
+            "weight",
+        ]
+        for key in preferred:
+            value = obj.get(key)
+            if isinstance(value, torch.Tensor) and value.ndim == 2:
+                return value
+        two_d = [(k, v) for k, v in obj.items() if isinstance(v, torch.Tensor) and v.ndim == 2]
+        if len(two_d) == 1:
+            return two_d[0][1]
+        found = [k for k, _ in two_d]
+        raise ValueError(
+            f"Could not resolve unique 2D projection matrix from {PROJECTION_PATH}. "
+            f"Found candidates: {found}"
+        )
+    raise ValueError(
+        f"Unsupported projection checkpoint format in {PROJECTION_PATH}. "
+        "Expected Tensor or dict containing a 2D weight matrix."
+    )
 
 
-def _get_colbert_checkpoint():
-    global _COLBERT_CHECKPOINT, _COLBERT_CKPT_LOAD_ATTEMPTED, _COLBERT_CKPT_WARNED
-    if not USE_COLBERT_CHECKPOINT:
-        return None
-    if _COLBERT_CHECKPOINT is not None:
-        return _COLBERT_CHECKPOINT
-    if _COLBERT_CKPT_LOAD_ATTEMPTED:
-        return None
-    _COLBERT_CKPT_LOAD_ATTEMPTED = True
-    try:
-        from colbert.infra import ColBERTConfig
-        from colbert.modeling.checkpoint import Checkpoint
+def _load_trained_projection_matrix() -> torch.Tensor:
+    global _PROJECTION_MATRIX, _PROJECTION_INFO
+    if _PROJECTION_MATRIX is not None:
+        return _PROJECTION_MATRIX
 
-        cfg = ColBERTConfig(doc_maxlen=COLBERT_DOC_MAXLEN, query_maxlen=COLBERT_QUERY_MAXLEN)
-        ckpt = Checkpoint(MODEL_NAME, colbert_config=cfg)
-        if DEVICE.type == "cuda":
-            ckpt.cuda()
-        ckpt.eval()
-        print("[colbert] Checkpoint loaded (trained 128-D head enabled).")
-        _COLBERT_CHECKPOINT = ckpt
-    except Exception as e:
-        if not _COLBERT_CKPT_WARNED:
-            print(f"[warn] Failed to load ColBERT checkpoint path; falling back to linear projection. ({e})")
-            _COLBERT_CKPT_WARNED = True
-    return _COLBERT_CHECKPOINT
+    payload = torch.load(PROJECTION_PATH, map_location="cpu")
+    matrix = _extract_projection_tensor(payload)
+    if matrix.dtype not in {torch.float16, torch.float32}:
+        raise ValueError(
+            f"Projection matrix dtype must be float16 or float32, got {matrix.dtype} "
+            f"from {PROJECTION_PATH}."
+        )
+    if matrix.ndim != 2:
+        raise ValueError(f"Projection matrix must be rank-2, got shape={tuple(matrix.shape)}.")
 
+    original_shape = tuple(matrix.shape)
+    transposed = False
+    if original_shape == (768, 128):
+        matrix = matrix.transpose(0, 1).contiguous()
+        transposed = True
+    elif original_shape != (128, 768):
+        raise ValueError(
+            f"Projection matrix shape must be [128,768] (or [768,128] transposed). "
+            f"Got {original_shape} from {PROJECTION_PATH}."
+        )
 
-def _embed_128_tokens_from_checkpoint(text: str, *, is_query: bool) -> torch.Tensor | None:
-    ckpt = _get_colbert_checkpoint()
-    if ckpt is None:
-        return None
-    with torch.no_grad():
-        if is_query:
-            out = ckpt.queryFromText([text], bsize=1)
-        else:
-            out = ckpt.docFromText([text], bsize=1, keep_dims=False)
-    mat = _coerce_token_matrix(out)
-    if mat is None:
-        return None
-    return F.normalize(mat, p=2, dim=1)
+    _PROJECTION_MATRIX = matrix.to(device=DEVICE)
+    _PROJECTION_INFO = {
+        "path": str(PROJECTION_PATH),
+        "shape": tuple(_PROJECTION_MATRIX.shape),
+        "dtype": str(_PROJECTION_MATRIX.dtype),
+        "device": str(_PROJECTION_MATRIX.device),
+        "transposed": str(transposed),
+    }
+    return _PROJECTION_MATRIX
 
 
-def _get_token_projection():
-    global _TOKEN_PROJECTION
-    if not (_variant_enabled("128_f32") or _variant_enabled("128_f16") or TOKEN_VECTOR_DIM == 128):
-        return None
-    if _TOKEN_PROJECTION is None:
-        proj = torch.nn.Linear(768, 128, bias=False)
-        proj.to(DEVICE)
-        proj.eval()
-        _TOKEN_PROJECTION = proj
-    return _TOKEN_PROJECTION
+def _projection_summary() -> str:
+    proj = _load_trained_projection_matrix()
+    shape = tuple(proj.shape)
+    return (
+        f"model={MODEL_NAME} projection_mode={PROJECTION_MODE} "
+        f"projection_path={PROJECTION_PATH} projection_shape={shape} "
+        f"final_token_dim={TOKEN_VECTOR_DIM} token_dtype={TOKEN_VECTOR_DTYPE}"
+    )
 
 
-def _variant_enabled(name: str) -> bool:
-    if COLBERT_VARIANTS in {"all", "*"}:
-        return True
-    enabled = {v.strip() for v in COLBERT_VARIANTS.split(",") if v.strip()}
-    return name in enabled
+def _project_tokens_128(masked_token_embeddings: torch.Tensor) -> torch.Tensor:
+    if masked_token_embeddings.ndim != 2 or masked_token_embeddings.shape[1] != 768:
+        raise ValueError(
+            f"Expected token embeddings shape [T,768] before projection. "
+            f"Got {tuple(masked_token_embeddings.shape)}."
+        )
+    proj = _load_trained_projection_matrix()
+    tokens = masked_token_embeddings.to(device=DEVICE, dtype=proj.dtype)
+    projected = tokens @ proj.transpose(0, 1)
+    if projected.ndim != 2 or projected.shape[1] != 128:
+        raise ValueError(
+            f"Projected token embeddings must have shape [T,128]. Got {tuple(projected.shape)}."
+        )
+    return F.normalize(projected.to(torch.float32), p=2, dim=1)
 
 
-def _build_token_variants(token_vectors: torch.Tensor, text: str | None = None, *, is_query: bool = False) -> dict[str, object]:
+def _build_token_variants(projected_token_vectors: torch.Tensor) -> dict[str, object]:
+    if projected_token_vectors.ndim != 2 or projected_token_vectors.shape[1] != 128:
+        raise ValueError(
+            f"Token vectors must be [T,128] before variant export. "
+            f"Got {tuple(projected_token_vectors.shape)}."
+        )
     variants: dict[str, object] = {}
-    if _variant_enabled("768_f32"):
-        variants["768_f32"] = token_vectors.to(torch.float32).detach().cpu().numpy()
-    if _variant_enabled("768_f16"):
-        variants["768_f16"] = token_vectors.to(torch.float16).detach().cpu().numpy()
-    if _variant_enabled("768_i8"):
-        max_abs = token_vectors.abs().max(dim=1, keepdim=True).values
-        scale = max_abs / 127.0
-        scale = torch.where(scale == 0, torch.ones_like(scale), scale)
-        q = torch.clamp((token_vectors / scale).round(), -127, 127).to(torch.int8)
-        variants["768_i8"] = {
-            "data": q.detach().cpu().numpy(),
-            "scale": scale.detach().cpu().numpy().astype("float32"),
-        }
-    if _variant_enabled("128_f32") or _variant_enabled("128_f16"):
-        projected = None
-        if text:
-            projected = _embed_128_tokens_from_checkpoint(text, is_query=is_query)
-        if projected is None:
-            proj = _get_token_projection()
-            if proj is None:
-                raise RuntimeError("Token projection layer not initialized")
-            projected = proj(token_vectors)
-            projected = F.normalize(projected, p=2, dim=1)
-        if _variant_enabled("128_f32"):
-            variants["128_f32"] = projected.to(torch.float32).detach().cpu().numpy()
-        if _variant_enabled("128_f16"):
-            variants["128_f16"] = projected.to(torch.float16).detach().cpu().numpy()
+    if "128_f32" in ENABLED_COLBERT_VARIANTS:
+        variants["128_f32"] = projected_token_vectors.to(torch.float32).detach().cpu().numpy()
+    if "128_f16" in ENABLED_COLBERT_VARIANTS:
+        variants["128_f16"] = projected_token_vectors.to(torch.float16).detach().cpu().numpy()
+    if not variants:
+        raise ValueError(
+            f"No enabled 128-d variants found in configuration: {sorted(ENABLED_COLBERT_VARIANTS)}"
+        )
     return variants
+
+
+def normalize_text_for_embedding(text: str | None) -> str:
+    """
+    Shared normalization for all text that is sent to the embedding model.
+    Keeping claims and queries on the same normalization path avoids drift.
+    """
+    return rich_to_plain((text or "").strip())
 
 
 def _token_count(text: str, tokenizer) -> int:
@@ -320,7 +315,7 @@ def _split_oversize_text(text: str, tokenizer, max_length: int, overlap_tokens: 
 def _expand_chunks_for_token_limit(chunks, tokenizer, max_length: int, overlap_tokens: int):
     expanded = []
     for ch in chunks:
-        text = rich_to_plain((ch.get("text") or ch.get("chunk") or "").strip())
+        text = normalize_text_for_embedding(ch.get("text") or ch.get("chunk"))
         if not text:
             expanded.append(ch)
             continue
@@ -340,6 +335,7 @@ def _expand_chunks_for_token_limit(chunks, tokenizer, max_length: int, overlap_t
     return expanded
 def embed_chunks(chunks, tokenizer, model, max_length=350):
     print("Starting embedding process...")
+    print(f"[embed-config] {_projection_summary()}")
 # Our list of embeddings, and runs ColBERT in evaluation mode. Model normally runs in train()   #
 # mode, which will drop embeddings and normalize to prevent overfitting.                        #
     embeddings = []
@@ -362,7 +358,7 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
     for idx, chunk in enumerate(chunks):
         if progress_every > 0 and (idx == 0 or (idx + 1) % progress_every == 0):
             print(f"Embedding chunk {idx + 1} of {len(chunks)})")
-        text = rich_to_plain((chunk.get("text") or chunk.get("chunk") or "").strip())
+        text = normalize_text_for_embedding(chunk.get("text") or chunk.get("chunk"))
 
         if not text:
             print(f"Empty chunk at index {idx}")
@@ -400,26 +396,28 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
             attn_mask = tokens["attention_mask"].squeeze(0).bool()
             masked_embeddings = token_embeddings[attn_mask]
             if masked_embeddings.numel() == 0:
-                masked_embeddings = token_embeddings[attn_mask.sum().item():]
+                raise ValueError("No non-padding tokens available after attention_mask filtering.")
+            projected_tokens = _project_tokens_128(masked_embeddings)
+            if projected_tokens.shape[-1] != 128:
+                raise ValueError(
+                    f"Projected token embeddings must be 128-d. Got {projected_tokens.shape[-1]}."
+                )
             chunk_vector = (
-                masked_embeddings.mean(dim=0)
+                projected_tokens.mean(dim=0)
                 .detach()
                 .cpu()
                 .numpy()
                 .tolist()
             )
-            token_vectors = masked_embeddings
-            colbert_variants = _build_token_variants(token_vectors, text=text, is_query=False)
-            if TOKEN_VECTOR_DIM == 768:
-                colbert_vectors = colbert_variants.get(
-                    "768_f16" if TOKEN_VECTOR_DTYPE == "float16" else "768_f32"
-                )
-            else:
-                colbert_vectors = colbert_variants.get(
-                    "128_f16" if TOKEN_VECTOR_DTYPE == "float16" else "128_f32"
-                )
+            colbert_variants = _build_token_variants(projected_tokens)
+            colbert_vectors = colbert_variants.get(PRIMARY_COLBERT_VARIANT)
             if colbert_vectors is None:
-                raise RuntimeError("Configured ColBERT variant not available")
+                raise ValueError(
+                    f"Configured primary ColBERT variant '{PRIMARY_COLBERT_VARIANT}' is unavailable. "
+                    f"Available={sorted(colbert_variants.keys())}"
+                )
+            if np.asarray(colbert_vectors).shape[-1] != 128:
+                raise ValueError("Configured ColBERT vectors are not 128-d.")
 
         chunk["embedding"] = chunk_vector
         chunk["colbert"] = colbert_vectors
@@ -430,9 +428,10 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
 
 def embed_query(query, tokenizer, model, max_length=256):
     model.eval()
+    query_text = normalize_text_for_embedding(query)
  
     tokens = tokenizer(
-        query, 
+        query_text,
         return_tensors="pt", 
         truncation=True, 
         padding="max_length", 
@@ -444,11 +443,16 @@ def embed_query(query, tokenizer, model, max_length=256):
         outputs = model(**tokens)
 
     token_embeddings = outputs.last_hidden_state.squeeze(0)
+    if token_embeddings.shape[-1] != 768:
+        raise ValueError(f"Expected query token embeddings [T,768], got {tuple(token_embeddings.shape)}.")
     attn_mask = tokens["attention_mask"].squeeze(0).bool()
     masked_embeddings = token_embeddings[attn_mask]
     if masked_embeddings.numel() == 0:
-        masked_embeddings = token_embeddings[:1]
-    query_vector = masked_embeddings.mean(dim=0, keepdim=True)
+        raise ValueError("No non-padding query tokens after attention_mask filtering.")
+    projected_tokens = _project_tokens_128(masked_embeddings)
+    if projected_tokens.shape[-1] != 128:
+        raise ValueError("Query projection failed to produce 128-d tokens.")
+    query_vector = projected_tokens.mean(dim=0, keepdim=True)
     query_vector = query_vector.detach().cpu().numpy().astype("float32")  # keep 2D
     return query_vector
 
@@ -456,11 +460,12 @@ def embed_query(query, tokenizer, model, max_length=256):
 def embed_query_tokens_for_shard(query: str, shard: str, max_length: int = 256):
     """
     Token-level query embeddings for a specific shard.
-    Uses ColBERT checkpoint 128-D head when enabled; falls back to linear projection.
+    Strictly uses trained 128-D projection.
     """
-    shard = shard.lower()
+    shard = assert_128_variant(shard, context="embed_query_tokens_for_shard")
+    query_text = normalize_text_for_embedding(query)
     tokens = tokenizer(
-        query,
+        query_text,
         return_tensors="pt",
         truncation=True,
         padding="max_length",
@@ -471,13 +476,20 @@ def embed_query_tokens_for_shard(query: str, shard: str, max_length: int = 256):
     with torch.no_grad():
         outputs = model(**tokens)
     token_embeddings = outputs.last_hidden_state.squeeze(0)
+    if token_embeddings.shape[-1] != 768:
+        raise ValueError(f"Expected query token embeddings [T,768], got {tuple(token_embeddings.shape)}.")
     attn_mask = tokens["attention_mask"].squeeze(0).bool()
     masked = token_embeddings[attn_mask]
     if masked.numel() == 0:
-        masked = token_embeddings[:1]
-    variants = _build_token_variants(masked, text=query, is_query=True)
+        raise ValueError("No non-padding query tokens after attention_mask filtering.")
+    projected = _project_tokens_128(masked)
+    variants = _build_token_variants(projected)
     if shard not in variants:
-        raise ValueError(f"Shard '{shard}' unavailable. Enabled variants: {sorted(variants.keys())}")
+        raise ValueError(
+            f"Requested shard '{shard}' unavailable. Enabled variants: {sorted(variants.keys())}"
+        )
+    if np.asarray(variants[shard]).shape[-1] != 128:
+        raise ValueError(f"Variant '{shard}' produced non-128 vectors.")
     return variants[shard]
 
 
@@ -541,3 +553,8 @@ def load_embeddings_into_weaviate(path: str | Path, batch_size: int = 128):
         store_embeddings(buffer)
         total += len(buffer)
     print(f"[embed] Loaded {total} embeddings from {path} into Weaviate")
+
+
+# Validate strict projection config at module import time.
+_load_trained_projection_matrix()
+print(f"[embed-init] {_projection_summary()}")

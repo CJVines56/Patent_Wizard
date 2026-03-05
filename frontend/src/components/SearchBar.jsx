@@ -2,7 +2,12 @@
 // Simple controlled input that calls the parent onSearch handler.
 import { useState } from "react";
 
-export default function SearchBar({ onSearch, placeholder = "Search patents..." }) {
+export default function SearchBar({
+  onSearch,
+  placeholder = "Search patents...",
+  topK = null,
+  onTopKAdjust = null,
+}) {
   // Local input state (the query text)
   const [q, setQ] = useState("");
   // Brief loading flag while the parent is performing the search
@@ -31,19 +36,42 @@ export default function SearchBar({ onSearch, placeholder = "Search patents..." 
 
   return (
     // Center the bar with mx-auto; limit width for readability
-    <form onSubmit={handleSubmit} className="w-full max-w-md mx-auto">
-      <input
-        value={q}                            // controlled input value
-        onChange={(e) => setQ(e.target.value)} // update local state as user types
-        type="text"
-        placeholder={placeholder}
-        className="w-full px-4 py-3 rounded-lg text-black shadow
-                   focus:outline-none focus:ring-2 focus:ring-white"
-        aria-label="Search patents"
-      />
+    <form onSubmit={handleSubmit} className="w-full max-w-2xl mx-auto">
+      <div className="flex items-center gap-2">
+        <input
+          value={q}                            // controlled input value
+          onChange={(e) => setQ(e.target.value)} // update local state as user types
+          type="text"
+          placeholder={placeholder}
+          className="flex-1 px-4 py-3 rounded-lg text-black shadow
+                     focus:outline-none focus:ring-2 focus:ring-white"
+          aria-label="Search patents"
+        />
+        {typeof onTopKAdjust === "function" && (
+          <button
+            type="button"
+            onClick={onTopKAdjust}
+            className="px-3 py-3 rounded-lg bg-black/30 border border-white/20
+                       text-white text-sm font-medium hover:bg-black/40 whitespace-nowrap"
+            aria-label="Adjust top K"
+            title="Adjust retrieval top K"
+          >
+            K: {topK ?? "-"}
+          </button>
+        )}
+        <button
+          type="submit"
+          disabled={loading || !q.trim()}
+          className="px-3 py-3 rounded-lg bg-orange-600 text-white text-sm font-medium
+                     hover:bg-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          aria-label="Submit search"
+        >
+          Search
+        </button>
+      </div>
       {/* Inline status and error messages below the input */}
       {err && <p className="mt-2 text-sm text-red-200">{err}</p>}
-      {loading && <p className="mt-2 text-sm text-white/80">Searching…</p>}
+      {loading && <p className="mt-2 text-sm text-white/80">Searching...</p>}
     </form>
   );
 }

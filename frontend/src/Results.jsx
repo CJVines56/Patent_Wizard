@@ -17,6 +17,7 @@ export default function Results() {
   const [error, setError] = useState(null);      // error message to show above cards
   const [result, setResult] = useState(null);    // API response
   const [modalFig, setModalFig] = useState(null); // full-size figure modal
+  const [topK, setTopK] = useState(5); // retrieval depth for cited results
 
   // Watch for browser navigation (Back/Forward) and update query state
   useEffect(() => {
@@ -38,7 +39,7 @@ export default function Results() {
       setError(null);
       setResult(null);
       try {
-        const K = 5;           // cited results (fed to LLM)
+        const K = topK;        // cited results (fed to LLM)
         const data = await orchestratorSearch(q, { k: K, k_extra: K });
         if (!cancelled) setResult(data);
       } catch (e) {
@@ -51,7 +52,7 @@ export default function Results() {
     return () => {
       cancelled = true;        // guard against state updates after unmount
     };
-  }, [q]);
+  }, [q, topK]);
 
   // Close modal on Escape
   useEffect(() => {
@@ -92,6 +93,17 @@ export default function Results() {
     window.history.pushState({}, "", url);
     setQ(nextQ);
     window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+
+  function handleTopKAdjust() {
+    const raw = window.prompt("Set Top-K (1-100):", String(topK));
+    if (raw == null) return;
+    const next = Number(raw);
+    if (!Number.isInteger(next) || next < 1 || next > 100) {
+      setError("Top-K must be an integer from 1 to 100.");
+      return;
+    }
+    setTopK(next);
   }
 
   if (!q) {
@@ -149,6 +161,7 @@ export default function Results() {
                 <div className="mb-3">
                   <p className="text-sm text-white/70">Query</p>
                   <p className="text-lg">{q}</p>
+                  <p className="text-sm text-white/70 mt-1">Top-K: {topK}</p>
                 </div>
                 {result.answer && (
                   <div className="mb-6">
@@ -157,7 +170,12 @@ export default function Results() {
                   </div>
                 )}
                 {/* Place the search bar on the card, beneath the RAG answer */}
-                <SearchBar onSearch={handleSearch} placeholder="Refine your query..." />
+                <SearchBar
+                  onSearch={handleSearch}
+                  placeholder="Refine your query..."
+                  topK={topK}
+                  onTopKAdjust={handleTopKAdjust}
+                />
               </div>
             </div>
 

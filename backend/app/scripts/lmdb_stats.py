@@ -10,10 +10,12 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DIR = BASE_DIR / "lmdb"
 
 DEFAULT_PATHS = {
-    "768_f32": Path(os.environ.get("LMDB_PATH_768_F32", DEFAULT_DIR / "colbert_768_f32.lmdb")),
-    "768_f16": Path(os.environ.get("LMDB_PATH_768_F16", DEFAULT_DIR / "colbert_768_f16.lmdb")),
     "128_f32": Path(os.environ.get("LMDB_PATH_128_F32", DEFAULT_DIR / "colbert_128_f32.lmdb")),
     "128_f16": Path(os.environ.get("LMDB_PATH_128_F16", DEFAULT_DIR / "colbert_128_f16.lmdb")),
+    "claim_payloads": Path(os.environ.get("LMDB_PATH_CLAIM_PAYLOAD", DEFAULT_DIR / "claim_payloads.lmdb")),
+    "patent_metadata": Path(
+        os.environ.get("LMDB_PATH_PATENT_METADATA", DEFAULT_DIR / "patent_metadata.lmdb")
+    ),
 }
 
 

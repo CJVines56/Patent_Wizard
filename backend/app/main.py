@@ -8,6 +8,29 @@ import logging
 from starlette.responses import Response
 import time
 import json
+import os
+
+
+def _clear_dead_local_proxy_env() -> None:
+    """
+    Some local sessions export a "blackhole" proxy (127.0.0.1:9) which breaks
+    outbound LLM/LangSmith calls. Remove it before importing orchestrator code.
+    """
+    proxy_keys = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ]
+    for key in proxy_keys:
+        value = (os.environ.get(key) or "").strip().lower()
+        if "127.0.0.1:9" in value:
+            os.environ.pop(key, None)
+
+
+_clear_dead_local_proxy_env()
 
 # Load orchestrator env before importing graph/nodes (Gemini clients initialize at import time).
 _ORCH_DIR = Path(__file__).resolve().parents[1] / "orchestrator"

@@ -2,18 +2,30 @@
 // Landing page with hero and centered search bar.
 // On submit, it performs client-side navigation to /search?q=...
 import robot from "./assets/robot.png";
+import { useState } from "react";
 import SearchBar from "./components/SearchBar.jsx";
 
 export default function Home() {
+  const [topK, setTopK] = useState(5);
+
   // Parent handler passed to SearchBar. It updates the browser history
   // so the in-file router (see src/main.jsx) renders the Results page.
   function handleSearch(query) {
     // Build new URL with query param
-    const url = "/search?" + new URLSearchParams({ q: query }).toString();
+    const url =
+      "/search?" + new URLSearchParams({ q: query, k: String(topK) }).toString();
     // Push a new history entry without full page reload
     window.history.pushState({}, "", url);
     // Notify our simple router to re-evaluate location
     window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+
+  function handleTopKAdjust() {
+    const raw = window.prompt("Set Top-K (1-100):", String(topK));
+    if (raw == null) return;
+    const next = Number(raw);
+    if (!Number.isInteger(next) || next < 1 || next > 100) return;
+    setTopK(next);
   }
 
   return (
@@ -34,7 +46,11 @@ export default function Home() {
 
       {/* Centered search bar */}
       <div className="w-full flex justify-center px-2">
-        <SearchBar onSearch={handleSearch} />
+        <SearchBar
+          onSearch={handleSearch}
+          topK={topK}
+          onTopKAdjust={handleTopKAdjust}
+        />
       </div>
     </div>
   );

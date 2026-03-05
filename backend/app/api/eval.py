@@ -14,6 +14,16 @@ from backend.app.scripts.retrieve_rerank import evaluate
 router = APIRouter(prefix="/api", tags=["eval"])
 
 
+def _env_float(primary: str, fallback: float, secondary: str | None = None) -> float:
+    value = os.environ.get(primary)
+    if value is None and secondary:
+        value = os.environ.get(secondary)
+    try:
+        return float(value) if value is not None else float(fallback)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
 def _require_api_key(api_key: Optional[str]) -> None:
     expected = os.environ.get("QRELS_API_KEY")
     if not expected:
@@ -50,8 +60,11 @@ async def qrels_eval(
     api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
     qrels: UploadFile = File(...),
     queries: UploadFile | None = File(default=None),
-    retrieve_shard: str = Form(default="768_f16"),
-    rerank_shard: str = Form(default="768_f16"),
+    retrieve_shard: str = Form(default="128_f16"),
+    rerank_shard: str = Form(default="128_f16"),
+    rerank_source: str = Form(default=os.environ.get("RERANK_SOURCE", "lmdb")),
+    retrieval_mode: str = Form(default=os.environ.get("RETRIEVAL_MODE", os.environ.get("WEAVIATE_RETRIEVAL_MODE", "vector"))),
+    hybrid_alpha: float = Form(default=_env_float("HYBRID_ALPHA", 0.5, secondary="WEAVIATE_HYBRID_ALPHA")),
     limit: int = Form(default=200),
     rerank_k: int = Form(default=100),
     filter_missing_qrels: bool = Form(default=True),
@@ -78,15 +91,20 @@ async def qrels_eval(
             rerank_shard=rerank_shard,
             limit=limit,
             rerank_k=rerank_k,
+            retrieval_mode=retrieval_mode,
+            hybrid_alpha=hybrid_alpha,
+            rerank_source=rerank_source,
             filter_missing_qrels=filter_missing_qrels,
         )
+        candidate_hit_metric = f"candidate_hit@{int(limit)}"
 
         metrics_csv = (
-            "precision@10,recall@10,ndcg@10,mrr@10\n"
+            f"precision@10,recall@10,ndcg@10,mrr@10,{candidate_hit_metric}\n"
             f"{metrics.get('precision@10', 0.0)},"
             f"{metrics.get('recall@10', 0.0)},"
             f"{metrics.get('ndcg@10', 0.0)},"
-            f"{metrics.get('mrr@10', 0.0)}\n"
+            f"{metrics.get('mrr@10', 0.0)},"
+            f"{metrics.get(candidate_hit_metric, 0.0)}\n"
         )
 
         return {
@@ -94,6 +112,9 @@ async def qrels_eval(
             "metrics_csv": metrics_csv,
             "retrieve_shard": retrieve_shard,
             "rerank_shard": rerank_shard,
+            "retrieval_mode": retrieval_mode,
+            "hybrid_alpha": hybrid_alpha,
+            "rerank_source": rerank_source,
             "limit": limit,
             "rerank_k": rerank_k,
             "filter_missing_qrels": filter_missing_qrels,
