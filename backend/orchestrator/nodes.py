@@ -3,10 +3,8 @@ from typing import Any, Dict, Optional, List
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AIMessage
-from langgraph.graph import MessagesState
 
-from patent_miner_classes import retrievalstate
+from patent_miner_classes import retrievalstate, Patent_Miner_State
 from vector_store import vector_storage
 
 load_dotenv()
@@ -32,7 +30,7 @@ def _trim_messages(messages, n=N_MEMORY):
     return messages[-n:] if messages else messages
 
 
-def query_clean(state: MessagesState) -> dict:
+def query_clean(state: Patent_Miner_State):
     """
     Clean the latest user question.
     IMPORTANT: Do not overwrite `messages` (we keep it as chat history).
@@ -40,12 +38,12 @@ def query_clean(state: MessagesState) -> dict:
     question = state["messages"][-1].content
     prompt = clean_prompt.format(question=question)
 
-    cleaned_text = nodes_model.invoke([{"role": "user", "content": prompt}]).content.strip()
-    return {"cleaned_query": cleaned_text}
+    cleaned_query = nodes_model.invoke([{"role": "user", "content": prompt}]).content.strip()
+    return {"messages": [{"role": "user", "content": cleaned_query}]}
 
 
-def query_route(state: MessagesState) -> retrievalstate:
-    user_text = state.get("cleaned_query") or state["messages"][-1].content
+def query_route(state: Patent_Miner_State) -> retrievalstate:
+    user_text = state["messages"][-1].content
 
     prompt = (
         "You are a router for a Patent search and retrieval RAG system.\n"
@@ -70,7 +68,7 @@ def query_route(state: MessagesState) -> retrievalstate:
     return {"retrieval_required": needs_retrieval, "routing_decision_raw": text}
 
 
-def retrieve_context(state: MessagesState, where_filter: Optional[Dict[str, Any]] = None) -> dict:
+def retrieve_context(state: Patent_Miner_State, where_filter: Optional[Dict[str, Any]] = None):
     """
     Retrieval uses ONLY the latest cleaned question (not full chat history).
     """
@@ -80,7 +78,7 @@ def retrieve_context(state: MessagesState, where_filter: Optional[Dict[str, Any]
         search_kwargs=search_kwargs,
     )
 
-    question = state.get("cleaned_query") or state["messages"][-1].content
+    question = state["messages"][-1].content
     docs = retriever.invoke(question)
 
     chunks: List[Dict[str, Any]] = [
@@ -99,8 +97,8 @@ rusty_prompt = (
     "Use three sentences maximum. If the context is not relevant, say so.\n"
 )
 
-def rusty_answer(state: MessagesState) -> dict:
-    question = state.get("cleaned_query") or state["messages"][-1].content
+def rusty_answer(state: Patent_Miner_State):
+    question = state["messages"][-1].content
     context = state.get("joined_context") or ""
     prompt = rusty_prompt.format(question=question, context=context)
 
@@ -108,7 +106,7 @@ def rusty_answer(state: MessagesState) -> dict:
     history = _trim_messages(state["messages"], N_MEMORY)
     response_text = nodes_model.invoke(history + [{"role": "user", "content": prompt}]).content
 
-    return {"answer": response_text}
+    return {"messages": response_text}
 
 
 general_prompt = (
@@ -117,24 +115,24 @@ general_prompt = (
     "Question: {question}"
 )
 
-def general_answer(state: MessagesState) -> dict:
-    question = state.get("cleaned_query") or state["messages"][-1].content
+def general_answer(state: Patent_Miner_State):
+    question = state["messages"][-1].content
     prompt = general_prompt.format(question=question)
 
     history = _trim_messages(state["messages"], N_MEMORY)
     response_text = nodes_model.invoke(history + [{"role": "user", "content": prompt}]).content
 
-    return {"answer": response_text}
+    return {"messages": response_text}
 
 
-def append_answer_to_messages(state: MessagesState) -> dict:
+def append_answer_to_messages(state: Patent_Miner_State):
     """
     Append final answer into chat history and trim to last N messages.
     This is what makes assistant replies available for future turns via the checkpointer.
     """
-    answer_text = state.get("answer", "")
+    answer_text = state["messages"][-1].content
     if not isinstance(answer_text, str):
         answer_text = str(answer_text)
 
-    new_messages = list(state["messages"]) + [AIMessage(content=answer_text)]
+    new_messages = list(state["messages"])
     return {"messages": new_messages[-N_MEMORY:]}

@@ -1,5 +1,6 @@
 from langgraph.graph import MessagesState, StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
+from patent_miner_classes import Patent_Miner_State
 
 from nodes import (
     query_clean,
@@ -13,7 +14,7 @@ from tools import routing_function
 
 
 def build_graph():
-    workflow = StateGraph(MessagesState)
+    workflow = StateGraph(Patent_Miner_State)
 
     workflow.add_node("query_clean", query_clean)
     workflow.add_node("query_route", query_route)
