@@ -23,30 +23,6 @@ from langsmith.run_helpers import trace
 
 load_dotenv()
 
-
-class RPMLimiterCallback(BaseCallbackHandler):
-    """
-    RPM limiter for LangChain LLM/chat model calls.
-    Works for sync runs and remains compatible even if a caller switches to batch/async later.
-    """
-    def __init__(self, rpm: int, jitter_s: float = 0.2):
-        self.min_interval = 60.0 / max(rpm, 1)
-        self.jitter_s = jitter_s
-        self._next_time = 0.0
-
-    def _sleep_if_needed(self):
-        now = time.time()
-        if now < self._next_time:
-            time.sleep(self._next_time - now)
-        self._next_time = time.time() + self.min_interval + random.uniform(0, self.jitter_s)
-
-    def on_chat_model_start(self, serialized, messages, **kwargs):
-        self._sleep_if_needed()
-
-    def on_llm_start(self, serialized, prompts, **kwargs):
-        self._sleep_if_needed()
-
-
 def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int = 60) -> dict:
     # Graph-level throttle (graph triggers multiple calls internally)
     time.sleep(60.0 / max(app_rpm_budget, 1))
@@ -58,7 +34,7 @@ def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int =
             project_name=os.getenv("LANGSMITH_PROJECT", "default"),
         ):
             config = {"configurable": {"thread_id": thread_id}}
-            pdb.set_trace()
+            #pdb.set_trace()
             final_state = app.invoke(
                 {"messages": [{"role": "user", "content": question}]},
                 config=config,
@@ -83,10 +59,30 @@ def main():
     # For dev CLI: a single fixed session (thread) for the whole run
     thread_id = "dev-session-1"
 
-    question = "Are there any patents that have been filed related to a Boron-Neutron Capture Therapy System?"
+    # Test 1
+    question = "How are you doing today buddy?"
     result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
     print("\nAnswer:\n", result["response"])
 
+    # Test 2
+    question = "Have there been any changes of late to the USPTO System?"
+    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    print("\nAnswer:\n", result["response"])
+
+    # Test 3
+    question = "Who is the currently overseeing the affairs of the USPTO office?"
+    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    print("\nAnswer:\n", result["response"])
+
+    # Test 4
+    question = "Is Barack Obama still the president of the USA?"
+    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    print("\nAnswer:\n", result["response"])
+
+    #Test 5
+    question = "When was Bill Clinton President of the US?"
+    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    print("\nAnswer:\n", result["response"])
 
 if __name__ == "__main__":
     main()

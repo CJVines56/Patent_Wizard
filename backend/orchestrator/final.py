@@ -23,29 +23,6 @@
 # load_dotenv()
 
 
-# class RPMLimiterCallback(BaseCallbackHandler):
-#     """
-#     RPM limiter for LangChain LLM/chat model calls.
-#     Works for sync runs and remains compatible even if a caller switches to batch/async later.
-#     """
-#     def __init__(self, rpm: int, jitter_s: float = 0.2):
-#         self.min_interval = 60.0 / max(rpm, 1)
-#         self.jitter_s = jitter_s
-#         self._next_time = 0.0
-
-#     def _sleep_if_needed(self):
-#         now = time.time()
-#         if now < self._next_time:
-#             time.sleep(self._next_time - now)
-#         self._next_time = time.time() + self.min_interval + random.uniform(0, self.jitter_s)
-
-#     def on_chat_model_start(self, serialized, messages, **kwargs):
-#         self._sleep_if_needed()
-
-#     def on_llm_start(self, serialized, prompts, **kwargs):
-#         self._sleep_if_needed()
-
-
 # def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int = 60) -> dict:
 #     # Graph-level throttle (graph triggers multiple calls internally)
 #     time.sleep(60.0 / max(app_rpm_budget, 1))
