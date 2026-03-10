@@ -8,16 +8,7 @@ warnings.filterwarnings(
 )
 
 import time
-import pdb
-from typing import Any, Dict, List
-import random
-
-import pandas as pd
-from datasets import Dataset
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain_core.callbacks.base import BaseCallbackHandler
-
 from graph import compile_graph
 from langsmith.run_helpers import trace
 
@@ -36,7 +27,8 @@ def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int =
             config = {"configurable": {"thread_id": thread_id}}
             #pdb.set_trace()
             final_state = app.invoke(
-                {"messages": [{"role": "user", "content": question}]},
+                {"messages": [{"role": "user", "content": question}],
+                "conversation_summary": ""},
                 config=config,
             )
 
@@ -60,7 +52,7 @@ def main():
     thread_id = "dev-session-1"
 
     # Test 1
-    question = "How are you doing today buddy?"
+    question = "How are yo]iu doing timoay bugdy"
     result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
     print("\nAnswer:\n", result["response"])
 
@@ -80,7 +72,12 @@ def main():
     print("\nAnswer:\n", result["response"])
 
     #Test 5
-    question = "When was Bill Clinton President of the US?"
+    question = "Who was President of the US when Vidal started running things?"
+    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    print("\nAnswer:\n", result["response"])
+
+    #Test 6
+    question = "Did the President and Kathi have a good relationship?"
     result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
     print("\nAnswer:\n", result["response"])
 

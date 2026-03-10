@@ -9,7 +9,7 @@ from vector_store import vector_storage
 
 load_dotenv()
 
-N_MEMORY = 10
+# N_MEMORY = 10
 
 nodes_model = ChatOpenAI(
     model="protected.gpt-4.1",
@@ -26,20 +26,25 @@ clean_prompt = (
 )
 
 
-def _trim_messages(messages, n=N_MEMORY):
-    return messages[-n:] if messages else messages
-
-
 def query_clean(state: Patent_Miner_State):
     """
     Clean the latest user question.
     IMPORTANT: Do not overwrite `messages` (we keep it as chat history).
     """
-    question = state["messages"][-1].content
-    prompt = clean_prompt.format(question=question)
+    messages = list(state.get("messages") or [])
+    if not messages:
+        return {}
 
+    last = messages[-1]
+    question = getattr(last, "content", None) or last.get("content", "")
+
+    prompt = clean_prompt.format(question=question)
     cleaned_query = nodes_model.invoke([{"role": "user", "content": prompt}]).content.strip()
-    return {"messages": [{"role": "user", "content": cleaned_query}]}
+
+    # Replace only the last message content (keep history)
+    messages[-1] = {"role": "user", "content": cleaned_query}
+    state["messages"][-1].content = messages[-1]["content"]
+    return None
 
 
 def query_route(state: Patent_Miner_State) -> retrievalstate:
@@ -107,7 +112,7 @@ def rusty_answer(state: Patent_Miner_State):
     history = _history_with_summary(state)
     response_text = nodes_model.invoke(history + [{"role": "user", "content": prompt}]).content
 
-    return {"messages": response_text}
+    return {"messages": [{"role": "assistant", "content": response_text}]}
 
 
 general_prompt = (
@@ -123,12 +128,12 @@ def general_answer(state: Patent_Miner_State):
     history = _history_with_summary(state)
     response_text = nodes_model.invoke(history + [{"role": "user", "content": prompt}]).content
 
-    return {"messages": response_text}
+    return {"messages": [{"role": "assistant", "content": response_text}]}
 
 ## Message summarization ##
 
-N_MEMORY = 10          # keep last 10 verbatim
-SUMMARIZE_KEEP = 6     # summarize everything except last 6 (tune as you like)
+N_MEMORY = 4          # keep last 4 verbatim
+SUMMARIZE_KEEP = 2     # summarize everything except last 2 (tune as you like)
 
 summary_model = ChatOpenAI(
     model="protected.gpt-4.1",
@@ -150,8 +155,8 @@ summary_prompt = ("You maintain a rolling conversation summary for a patent assi
 def _format_dialogue(msgs):
     lines = []
     for m in msgs:
-        role = getattr(m, "role", None) or m.get("role", "")
-        content = getattr(m, "content", None) or m.get("content", "")
+        role = m.type
+        content = m.content
         lines.append(f"{role.upper()}: {content}")
     return "\n".join(lines)
 
@@ -160,20 +165,22 @@ def maybe_summarize_messages(state: Patent_Miner_State):
     If messages exceed N_MEMORY, summarize the oldest part into conversation_summary,
     then keep only the last SUMMARIZE_KEEP messages verbatim.
     """
-    messages = list(state["messages"] or [])
+    messages = list(state.get("messages") or [])
     if len(messages) <= N_MEMORY:
         return {}
 
-    existing_summary = state["conversation_summary"] or ""
+    existing_summary = state.get("conversation_summary") or ""
 
     # summarize everything except the last SUMMARIZE_KEEP messages
     to_summarize = messages[:-SUMMARIZE_KEEP]
     to_keep = messages[-SUMMARIZE_KEEP:]
 
     dialogue = _format_dialogue(to_summarize)
+    print(dialogue)
     prompt = summary_prompt.format(existing_summary=existing_summary, dialogue=dialogue)
 
     updated_summary = summary_model.invoke([{"role": "user", "content": prompt}]).content.strip()
+    print(updated_summary)
 
     return {
         "conversation_summary": updated_summary,
@@ -182,18 +189,12 @@ def maybe_summarize_messages(state: Patent_Miner_State):
 
 
 def _history_with_summary(state: Patent_Miner_State):
-    msgs = list(state["messages"] or [])
-    summary = (state["conversation_summary"] or "").strip()
+    msgs = list(state.get("messages") or [])
+    summary = (state.get("conversation_summary") or "").strip()
     if summary:
         return [{"role": "system", "content": f"Conversation summary so far:\n{summary}"}] + msgs
     return msgs
 
-def append_answer_to_messages(state: Patent_Miner_State):
-    """
-    Append final answer into chat history.
-    This is what makes assistant replies available for future turns via the checkpointer.
-    """
-    return {"messages": list(state["messages"])}
-
 def summarize_memory(state: Patent_Miner_State):
+
     return maybe_summarize_messages(state)

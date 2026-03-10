@@ -36,7 +36,8 @@
 #             config = {"configurable": {"thread_id": thread_id}}
 
 #             final_state = app.invoke(
-#                 {"messages": [{"role": "user", "content": question}]},
+#                 {"messages": [{"role": "user", "content": question}],
+#                   "conversation_summary": ""},
 #                 config=config,
 #             )
 

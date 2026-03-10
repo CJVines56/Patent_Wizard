@@ -4,7 +4,7 @@ from langgraph.graph import MessagesState
 
 class Patent_Miner_State(MessagesState):
     # in Patent_Miner_State definition
-    conversation_summary: Optional[str]  # default ""
+    conversation_summary: Optional[str] = None
     joined_context: Optional[str] = None
     contexts: Optional[List[Dict[str, Any]]] = None
 
