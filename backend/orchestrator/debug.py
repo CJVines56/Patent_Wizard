@@ -25,10 +25,9 @@ def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int =
             project_name=os.getenv("LANGSMITH_PROJECT", "default"),
         ):
             config = {"configurable": {"thread_id": thread_id}}
-            #pdb.set_trace()
+            
             final_state = app.invoke(
-                {"messages": [{"role": "user", "content": question}],
-                "conversation_summary": ""},
+                {"messages": [{"role": "user", "content": question}]},
                 config=config,
             )
 
@@ -52,14 +51,14 @@ def main():
     thread_id = "dev-session-1"
 
     # Test 1
-    question = "How are yo]iu doing timoay bugdy"
-    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
-    print("\nAnswer:\n", result["response"])
+    # question = "How are yo]iu doing timoay bugdy"
+    # result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    # print("\nAnswer:\n", result["response"])
 
-    # Test 2
-    question = "Have there been any changes of late to the USPTO System?"
-    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
-    print("\nAnswer:\n", result["response"])
+    # # Test 2
+    # question = "Have there been any changes of late to the USPTO System?"
+    # result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    # print("\nAnswer:\n", result["response"])
 
     # Test 3
     question = "Who is the currently overseeing the affairs of the USPTO office?"
@@ -76,10 +75,10 @@ def main():
     result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
     print("\nAnswer:\n", result["response"])
 
-    #Test 6
-    question = "Did the President and Kathi have a good relationship?"
-    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
-    print("\nAnswer:\n", result["response"])
+    # #Test 6
+    # question = "Did the President and Kathi have a good relationship?"
+    # result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    # print("\nAnswer:\n", result["response"])
 
 if __name__ == "__main__":
     main()

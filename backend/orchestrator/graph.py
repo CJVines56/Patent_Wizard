@@ -1,4 +1,4 @@
-from langgraph.graph import MessagesState, StateGraph, START, END
+from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 from patent_miner_classes import Patent_Miner_State
 
@@ -8,7 +8,7 @@ from nodes import (
     retrieve_context,
     general_answer,
     rusty_answer,
-    summarize_memory
+    summarization_node
 )
 from tools import routing_function
 
@@ -21,7 +21,7 @@ def build_graph():
     workflow.add_node("retrieve", retrieve_context)
     workflow.add_node("general_answer", general_answer)
     workflow.add_node("rusty_answer", rusty_answer)
-    workflow.add_node("summarize_memory", summarize_memory)
+    workflow.add_node("summarize", summarization_node)
 
     workflow.add_edge(START, "query_clean")
     workflow.add_edge("query_clean", "query_route")
@@ -38,9 +38,9 @@ def build_graph():
     workflow.add_edge("retrieve", "rusty_answer")
 
     # Both answer paths append to memory then END
-    workflow.add_edge("rusty_answer", "summarize_memory")
-    workflow.add_edge("general_answer", "summarize_memory")
-    workflow.add_edge("summarize_memory", END)
+    workflow.add_edge("rusty_answer", "summarize")
+    workflow.add_edge("general_answer", "summarize")
+    workflow.add_edge("summarize", END)
 
     return workflow
 
