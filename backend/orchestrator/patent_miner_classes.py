@@ -8,6 +8,7 @@ class Patent_Miner_State(MessagesState):
     context: dict[str, RunningSummary] = None
     joined_context: Optional[str] = None
     retrieved_context: Optional[List[Dict[str, Any]]] = None
+    answer: Optional[str] = None
 
 
 class retrievalstate(TypedDict):

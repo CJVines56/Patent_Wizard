@@ -31,7 +31,7 @@ def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int =
                 config=config,
             )
 
-            answer = final_state["messages"][-1].content
+            answer = final_state["answer"]
             if isinstance(answer, list):
                 answer = "\n".join(str(x) for x in answer)
             elif not isinstance(answer, str):
@@ -50,13 +50,13 @@ def main():
     # For dev CLI: a single fixed session (thread) for the whole run
     thread_id = "dev-session-1"
 
-    # Test 1
+    # #Test 1
     # question = "How are yo]iu doing timoay bugdy"
     # result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
     # print("\nAnswer:\n", result["response"])
 
-    # # Test 2
-    # question = "Have there been any changes of late to the USPTO System?"
+    # Test 2
+    # question = "Is there any patent on Biopsy articles?"
     # result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
     # print("\nAnswer:\n", result["response"])
 

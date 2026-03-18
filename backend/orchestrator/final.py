@@ -41,7 +41,7 @@
 #                 config=config,
 #             )
 
-#             answer = final_state["messages"][-1].content
+#             answer = final_state["answer"]
 #             if isinstance(answer, list):
 #                 answer = "\n".join(str(x) for x in answer)
 #             elif not isinstance(answer, str):

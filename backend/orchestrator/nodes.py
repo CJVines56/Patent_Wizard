@@ -33,7 +33,6 @@ def query_clean(state: Patent_Miner_State):
     Clean the latest user question.
     IMPORTANT: Do not overwrite `messages` (we keep it as chat history).
     """
-    print(state.get("messages"))
     messages = list(state.get("messages") or [])
     if not messages:
         return {}
@@ -100,16 +99,27 @@ def retrieve_context(state: Patent_Miner_State, where_filter: Optional[Dict[str,
 
 rusty_prompt = (
     "You are a patent search and retrieval assistant.\n"
-    "Given the question and retrieved context below:\n"
+    "Given the question, retrieved context and summary of conversation below:\n\n"
     "Question: {question}\n\n"
     "Retrieved context:\n{context}\n\n"
+    "Conversation summary: \n{summary}\n\n"
     "Use three sentences maximum to respond to the user. If the context is not relevant, say so.\n"
 )
 
 def rusty_answer(state: Patent_Miner_State):
     question = state["messages"][-1].content
     context = state.get("joined_context") or ""
-    prompt = rusty_prompt.format(question=question, context=context)
+    summary=state.get("context")
+
+    
+    ## Summary Debug ##
+    # if summary == None:
+    #     pass
+    # else:
+    #     print(summary['running_summary'].summary)
+    ## Summary Debug
+
+    prompt = rusty_prompt.format(question=question, context=context, summary=summary)
 
     # Conversational memory: include last N messages as context
     # history = _history_with_summary(state)
@@ -117,25 +127,36 @@ def rusty_answer(state: Patent_Miner_State):
     ## Rewrite invoke method -- 3/17
     response_text = nodes_model.invoke([{"role": "user", "content": prompt}]).content
 
-    return {"messages": [{"role": "assistant", "content": response_text}]}
+    return {"messages": [{"role": "assistant", "content": response_text}], "answer": response_text}
 
 
 general_prompt = (
-    "You are a helpful assistant.\n"
+    "You are a helpful assistant. Given the question and summary of conversation below:\n\n"
+    "Question: {question}\n\n"
+    "Conversation summary: \n{summary}\n\n"
     "Answer concisely in <= 3 sentences. If you don't know, say you don't know.\n"
-    "Question: {question}"
 )
 
 def general_answer(state: Patent_Miner_State):
     question = state["messages"][-1].content
-    prompt = general_prompt.format(question=question)
+    summary=state.get("context")
+
+    
+     ## Summary Debug ##
+    # if summary == None:
+    #     pass
+    # else:
+    #     print(summary['running_summary'].summary)
+     ## Summary Debug ##
+
+    prompt = general_prompt.format(question=question, summary=summary)
 
     # history = _history_with_summary(state)
 
     ## Rewrite invoke method -- 3/17
     response_text = nodes_model.invoke([{"role": "user", "content": prompt}]).content
 
-    return {"messages": [{"role": "assistant", "content": response_text}]}
+    return {"messages": [{"role": "assistant", "content": response_text}], "answer": response_text}
 
 ## Message summarization ##
 
@@ -144,78 +165,7 @@ summarization_node = SummarizationNode(
     token_counter=count_tokens_approximately,
     model=nodes_model,
     max_tokens=256,
-    max_tokens_before_summary=20,
+    max_tokens_before_summary=256,
     max_summary_tokens=128,
     output_messages_key="messages"
 )
-
-
-
-
-# N_MEMORY = 4          # keep last 4 verbatim
-# SUMMARIZE_KEEP = 2     # summarize everything except last 2 (tune as you like)
-
-# summary_model = ChatOpenAI(
-#     model="protected.gpt-4.1",
-#     temperature=0.2,
-# )
-
-# summary_prompt = ("You maintain a rolling conversation summary for a patent assistant. \n"
-#                   "Existing summary (may be empty): \n{existing_summary}\n\n"
-#                   "New dialogue to incorporate: \n{dialogue}\n\n"
-#                   "Update the summary. Preserve:\n"
-#                   "- user goals, constraints, preferences\n"
-#                   "- decisions and plans\n"
-#                   "- important entities (names, dates, patent/publication numbers if present)\n"
-#                   "- open questions / next steps\n"
-#                   "Be concise. Do not invent details.\n"
-#                   "Return ONLY the updated summary."
-# )
-
-# def _format_dialogue(msgs):
-#     lines = []
-#     for m in msgs:
-#         role = m.type
-#         content = m.content
-#         lines.append(f"{role.upper()}: {content}")
-#     return "\n".join(lines)
-
-# def maybe_summarize_messages(state: Patent_Miner_State):
-#     """
-#     If messages exceed N_MEMORY, summarize the oldest part into conversation_summary,
-#     then keep only the last SUMMARIZE_KEEP messages verbatim.
-#     """
-#     messages = list(state.get("messages") or [])
-#     if len(messages) <= N_MEMORY:
-#         return {}
-
-#     existing_summary = state.get("conversation_summary") or ""
-
-#     # summarize everything except the last SUMMARIZE_KEEP messages
-#     to_summarize = messages[:-SUMMARIZE_KEEP]
-#     to_keep = messages[-SUMMARIZE_KEEP:]
-
-#     dialogue = _format_dialogue(to_summarize)
-#     print(dialogue)
-#     prompt = summary_prompt.format(existing_summary=existing_summary, dialogue=dialogue)
-
-#     updated_summary = summary_model.invoke([{"role": "user", "content": prompt}]).content.strip()
-#     print(updated_summary)
-
-#     return {
-#         "conversation_summary": updated_summary,
-#         "messages": to_keep,
-#     }
-
-
-# def _history_with_summary(state: Patent_Miner_State):
-#     msgs = list(state.get("messages") or [])
-#     summary = (state.get("conversation_summary") or "").strip()
-#     print("Debug \n", msgs)
-#     if summary:
-#         return [{"role": "system", "content": f"Conversation summary so far:\n{summary}"}] + msgs
-#     return msgs
-
-# def summarize_memory(state: Patent_Miner_State):
-
-#     return maybe_summarize_messages(state)
