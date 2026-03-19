@@ -45,7 +45,7 @@ def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int =
 
 
 def main():
-    app = compile_graph(print_mermaid=False)
+    app = compile_graph(print_mermaid=True)
 
     # For dev CLI: a single fixed session (thread) for the whole run
     thread_id = "dev-session-1"
@@ -61,19 +61,19 @@ def main():
     # print("\nAnswer:\n", result["response"])
 
     # Test 3
-    question = "Who is the currently overseeing the affairs of the USPTO office?"
+    question = "How are you?"
     result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
     print("\nAnswer:\n", result["response"])
 
-    # Test 4
-    question = "Is Barack Obama still the president of the USA?"
-    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
-    print("\nAnswer:\n", result["response"])
+    # # Test 4
+    # question = "Is Barack Obama still the president of the USA?"
+    # result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    # print("\nAnswer:\n", result["response"])
 
-    #Test 5
-    question = "Who was President of the US when Vidal started running things?"
-    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
-    print("\nAnswer:\n", result["response"])
+    # #Test 5
+    # question = "Who was President of the US when Vidal started running things?"
+    # result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    # print("\nAnswer:\n", result["response"])
 
     # #Test 6
     # question = "Did the President and Kathi have a good relationship?"

@@ -77,24 +77,101 @@ def query_route(state: Patent_Miner_State) -> retrievalstate:
 
 def retrieve_context(state: Patent_Miner_State, where_filter: Optional[Dict[str, Any]] = None):
     """
-    Retrieval uses ONLY the latest cleaned question (not full chat history).
+    Uniqueness-enforced retrieval:
+    - Select at most one chunk per patent (by 'doc_id' or fallback to 'index').
+    - Iteratively exclude already-seen patents and fetch more until target_k is reached.
+    - Optionally merge with an external metadata filter (where_filter).
     """
-    search_kwargs = {"k": 5}
-    retriever = vector_storage.as_retriever(
-        search_type="similarity",
-        search_kwargs=search_kwargs,
-    )
+    # Latest cleaned question
+    messages = state.get("messages") or []
+    question = messages[-1].content if messages else ""
 
-    question = state["messages"][-1].content
-    docs = retriever.invoke(question)
+    # Config
+    target_k = 5 # final number of unique patents to return (matches prior behavior)
+    unique_key = "doc_id" # patent-level uniqueness key (present in vector store metadata)
+    burst_k = 8 # how many candidates to fetch per round
+    max_rounds = 6 # max number of bursts
+
+    seen = set()
+    selected_docs = []
+    rounds = 0
+
+    while len(selected_docs) < target_k and rounds < max_rounds:
+        rounds += 1
+
+        # Exclude already-seen patents
+        exclusion_filter = {unique_key: {"$nin": list(seen)}} if seen else None
+
+        # Merge external where_filter with exclusion_filter
+        if where_filter and exclusion_filter:
+            combined_filter = {"$and": [where_filter, exclusion_filter]}
+        elif where_filter:
+            combined_filter = where_filter
+        else:
+            combined_filter = exclusion_filter
+
+        # Fetch a burst of candidates, excluding already selected patents
+        try:
+            docs = vector_storage.similarity_search(
+            question,
+            k=burst_k,
+            filter=combined_filter, # Chroma's metadata filter
+        )
+        except TypeError:
+        # Fallback for vector stores that expect "where" instead of "filter"
+            docs = vector_storage.similarity_search(
+            question,
+            k=burst_k,
+            where=combined_filter, # type: ignore
+        )
+
+        if not docs:
+            break
+
+        # Keep the first (most similar) chunk per unseen patent
+        for d in docs:
+            meta = dict(d.metadata) if d.metadata else {}
+            uid = meta.get(unique_key) or meta.get("index")
+            if not uid or uid in seen:
+                continue
+            seen.add(uid)
+            selected_docs.append(d)
+            if len(selected_docs) >= target_k:
+                break
+
+    # # Best-effort fallback: if not enough unique patents found, top up without filters  -- ### Consider Removing - kosi 3/19 ###
+    # if len(selected_docs) < target_k:
+    #     remaining = target_k - len(selected_docs)
+    # try:
+    #     docs = vector_storage.similarity_search(question, k=target_k * 2)
+    # except TypeError:
+    #     docs = vector_storage.similarity_search(question, k=target_k * 2)
+    # for d in docs:
+    #     meta = dict(d.metadata) if d.metadata else {}
+    #     uid = meta.get(unique_key) or meta.get("index")
+    #     if not uid or uid in seen:
+    #         continue
+    #     seen.add(uid)
+    #     selected_docs.append(d)
+    #     if len(selected_docs) >= target_k:
+    #         break
 
     chunks: List[Dict[str, Any]] = [
-        {"text": d.page_content, "metadata": dict(d.metadata) if d.metadata else {}}
-        for d in docs
+    {"text": d.page_content, "metadata": dict(d.metadata) if d.metadata else {}}
+    for d in selected_docs
     ]
     joined_context = "\n\n".join([c["text"] for c in chunks])
 
     return {"joined_context": joined_context, "retrieved_context": chunks}
+
+
+
+
+
+
+
+
+
 
 
 rusty_prompt = (
