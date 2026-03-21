@@ -1,13 +1,18 @@
+import sys
+import os
 import json
 from typing import Any, Dict, Optional, List
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-from patent_miner_classes import retrievalstate, Patent_Miner_State
-from vector_store import vector_storage
+from saby_classes import retrievalstate, Patent_Miner_State
+
+from orchestrator.vector_store import vector_storage
 from langmem.short_term import SummarizationNode, RunningSummary
 from langchain_core.messages.utils import count_tokens_approximately
+
+
 
 load_dotenv()
 
@@ -128,7 +133,7 @@ def retrieve_context(state: Patent_Miner_State, where_filter: Optional[Dict[str,
         if not docs:
             break
 
-        # Keep the first (most similar) chunk per unseen patent  -- chunks are returned in ranked order (first chunk - most similar to question --- confirm?)
+        # Keep the first (most similar) chunk per unseen patent
         for d in docs:
             meta = dict(d.metadata) if d.metadata else {}
             uid = meta.get(unique_key) or meta.get("index")
@@ -160,34 +165,28 @@ def retrieve_context(state: Patent_Miner_State, where_filter: Optional[Dict[str,
     {"text": d.page_content, "metadata": dict(d.metadata) if d.metadata else {}}
     for d in selected_docs
     ]
-    joined_context = "\n\n".join([c["text"] for c in chunks])
+    #joined_context = "\n\n".join([c["text"] for c in chunks])
 
-    return {"joined_context": joined_context, "retrieved_context": chunks}
+    return {"retrieved_context": chunks}
 
 
 rusty_prompt = (
     "You are a patent search and retrieval assistant.\n"
-    "Given the question, retrieved context and summary of conversation below:\n\n"
+    "Given the question, retrieved patents and summary of conversation below:\n\n"
     "Question: {question}\n\n"
-    "Retrieved context:\n{context}\n\n"
+    "Retrieved patents:\nPatent 1{patents}\n\n"
     "Conversation summary: \n{summary}\n\n"
     "Use three sentences maximum to respond to the user. If the context is not relevant, say so.\n"
 )
 
 def rusty_answer(state: Patent_Miner_State):
     question = state["messages"][-1].content
-    context = state.get("joined_context") or ""
+    patents = state.get("joined_patents") or ""
     summary=state.get("context")
 
-    
-    ## Summary Debug ##
-    # if summary == None:
-    #     pass
-    # else:
-    #     print(summary['running_summary'].summary)
-    ## Summary Debug
+    ## Refine coontext to full patent ##
 
-    prompt = rusty_prompt.format(question=question, context=context, summary=summary)
+    prompt = rusty_prompt.format(question=question, patents=patents, summary=summary)
 
     # Conversational memory: include last N messages as context
     # history = _history_with_summary(state)
