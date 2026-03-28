@@ -1,0 +1,8 @@
+TAMU_API_KEY=
+OPENAI_BASE_URL=https://chat-api.tamu.ai/openai
+OPENAI_API_KEY=
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=patent-miner
+# optional (only if you use self-hosted / custom region)
+# LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
