@@ -10,9 +10,24 @@ export async function orchestratorSearch(query, opts = {}) {
   // Build absolute URL like: http://localhost:8000/api/search?q=...&rag=true
   const url = new URL(API_BASE + "/search");
   url.searchParams.set("q", query);            // user query
-  url.searchParams.set("rag", "true");         // always request RAG mode
-  if (opts.k != null) url.searchParams.set("k", String(opts.k));
-  if (opts.k_extra != null) url.searchParams.set("k_extra", String(opts.k_extra));
+  url.searchParams.set("rag", String(opts.rag ?? true));
+
+  // Pass known and future tuning knobs through to the API.
+  const passthroughKeys = [
+    "k",
+    "k_extra",
+    "alpha",
+    "retrieval_k",
+    "retrieval_candidates",
+    "rerank_k",
+    "rerank_shard",
+  ];
+  passthroughKeys.forEach((key) => {
+    const value = opts[key];
+    if (value != null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  });
 
   // Helpful debug to see exactly what URL is requested
   console.log("[orchestratorSearch] GET", url.toString());
