@@ -597,7 +597,7 @@ def main() -> None:
     parser.add_argument("--cache-dir", type=Path, default=None)
     parser.add_argument("--retrieval-mode", type=str, default="vector", choices=["vector", "bm25", "hybrid"])
     parser.add_argument("--hybrid-alpha", type=float, default=0.5)
-    parser.add_argument("--rerank-source", type=str, default="lmdb", choices=["lmdb", "weaviate"])
+    parser.add_argument("--rerank-source", type=str, default="weaviate", choices=["lmdb", "weaviate"])
     parser.add_argument("--diag-limit", type=int, default=None, help="Limit to use for detailed plots. Default=max L.")
     parser.add_argument("--diag-k", type=int, default=200, help="k used by per-query histogram/scatter dashboard.")
     parser.add_argument("--curve-kmax", type=int, default=200, help="Max k used for PR/DCG curves.")

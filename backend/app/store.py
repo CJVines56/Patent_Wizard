@@ -16,13 +16,16 @@ import re
 import uuid
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import lmdb
 import numpy as np
 import weaviate
+from weaviate.config import AdditionalConfig, Timeout
 from weaviate.collections.classes.data import DataObject
 from weaviate.classes.config import Property, DataType, Configure
 from weaviate.classes.init import Auth
+from weaviate.exceptions import WeaviateBatchError
 from backend.app.vector_config import (
     ALLOWED_VARIANTS,
     PRIMARY_COLBERT_VARIANT,
@@ -91,6 +94,34 @@ STRICT_COLBERT_VECTORS = os.environ.get("STRICT_COLBERT_VECTORS", "0").strip() i
     "yes",
     "YES",
 }
+WEAVIATE_CONNECT_MODE = os.environ.get("WEAVIATE_CONNECT_MODE", "local").strip().lower() or "local"
+WEAVIATE_LOCAL_HOST = os.environ.get("WEAVIATE_LOCAL_HOST", "localhost").strip() or "localhost"
+WEAVIATE_LOCAL_PORT = int(os.environ.get("WEAVIATE_LOCAL_PORT", "8080"))
+WEAVIATE_LOCAL_GRPC_PORT = int(os.environ.get("WEAVIATE_LOCAL_GRPC_PORT", "50051"))
+WEAVIATE_HTTP_HOST = os.environ.get("WEAVIATE_HTTP_HOST", WEAVIATE_LOCAL_HOST).strip() or WEAVIATE_LOCAL_HOST
+WEAVIATE_HTTP_PORT = int(os.environ.get("WEAVIATE_HTTP_PORT", str(WEAVIATE_LOCAL_PORT)))
+WEAVIATE_GRPC_HOST = os.environ.get("WEAVIATE_GRPC_HOST", WEAVIATE_LOCAL_HOST).strip() or WEAVIATE_LOCAL_HOST
+WEAVIATE_GRPC_PORT = int(os.environ.get("WEAVIATE_GRPC_PORT", str(WEAVIATE_LOCAL_GRPC_PORT)))
+WEAVIATE_HTTP_SECURE = os.environ.get("WEAVIATE_HTTP_SECURE", "0").strip() in {
+    "1",
+    "true",
+    "True",
+    "yes",
+    "YES",
+}
+WEAVIATE_GRPC_SECURE = os.environ.get("WEAVIATE_GRPC_SECURE", "0").strip() in {
+    "1",
+    "true",
+    "True",
+    "yes",
+    "YES",
+}
+WEAVIATE_CLUSTER_URL = os.environ.get("WEAVIATE_CLUSTER_URL", "").strip()
+WEAVIATE_API_KEY = os.environ.get("WEAVIATE_API_KEY", "").strip()
+WEAVIATE_TIMEOUT_INIT = float(os.environ.get("WEAVIATE_TIMEOUT_INIT", "10"))
+WEAVIATE_TIMEOUT_QUERY = float(os.environ.get("WEAVIATE_TIMEOUT_QUERY", "60"))
+WEAVIATE_TIMEOUT_INSERT = float(os.environ.get("WEAVIATE_TIMEOUT_INSERT", "300"))
+_WEAVIATE_CLIENT_DEBUG_PRINTED = False
 
 LMDB_VARIANT_PATHS = {
     "128_f32": LMDB_PATH_128_F32,
@@ -116,7 +147,34 @@ PATENT_METADATA_EXCLUDE_KEYS = {
     "embedding",
     "colbert",
     "colbert_variants",
+    "record_schema_version",
+    "weaviate_claim_uuid",
+    "weaviate_patent_uuid",
+    "weaviate_claim_properties",
+    "weaviate_patent_properties",
+    "weaviate_named_vectors",
 }
+DATASET_LMDB_VECTOR_EXCLUDE_KEYS = {
+    "embedding",
+    "colbert",
+    "colbert_variants",
+    "weaviate_named_vectors",
+}
+
+PERSISTED_RECORD_SCHEMA_VERSION = 1
+PARAMETER_SWEEP_RESET_COLLECTIONS = ("Claim", "Patent")
+
+
+def _env_optional_int(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return None
+    return int(str(raw).strip())
+
+
+WEAVIATE_MUVERA_KSIM = _env_optional_int("WEAVIATE_MUVERA_KSIM")
+WEAVIATE_MUVERA_DPROJECTIONS = _env_optional_int("WEAVIATE_MUVERA_DPROJECTIONS")
+WEAVIATE_MUVERA_REPETITIONS = _env_optional_int("WEAVIATE_MUVERA_REPETITIONS")
 
 
 def _util_shard_from_doc_id(doc_id: str | None) -> str | None:
@@ -179,6 +237,96 @@ def _to_jsonable(value):
     return str(value)
 
 
+def _normalize_authors(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, tuple):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return [a.strip() for a in value.split(";") if a.strip()]
+    return []
+
+
+def _build_patent_properties(emb: dict) -> dict:
+    return {
+        "doc_id": str(emb.get("doc_id") or "").strip(),
+        "filing_date": str(emb.get("filing_date") or ""),
+        "classification": str(emb.get("classification") or ""),
+        "authors": _normalize_authors(emb.get("authors")),
+        "title": str(emb.get("title") or ""),
+        "kind": str(emb.get("kind") or ""),
+    }
+
+
+def _build_claim_properties(emb: dict) -> dict:
+    claim_identity = _claim_identity(emb)
+    claim_number = emb.get("claim_number")
+    if isinstance(claim_number, str) and claim_number.isdigit():
+        claim_number = int(claim_number)
+    props = {
+        "claim_id": str(emb.get("claim_id") or claim_identity),
+        "claim_type": str(emb.get("claim_type") or ""),
+        "doc_id": str(emb.get("doc_id") or ""),
+        "text": str(emb.get("text") or emb.get("chunk") or ""),
+    }
+    if isinstance(claim_number, int):
+        props["claim_number"] = claim_number
+    return props
+
+
+def _claim_uuid_for_record(emb: dict) -> str:
+    explicit = str(emb.get("weaviate_claim_uuid") or "").strip()
+    if explicit:
+        return explicit
+    return _stable_uuid("claim", _claim_identity(emb))
+
+
+def _patent_uuid_for_record(emb: dict) -> str:
+    explicit = str(emb.get("weaviate_patent_uuid") or "").strip()
+    if explicit:
+        return explicit
+    return _stable_uuid("patent", str(emb.get("doc_id") or "").strip())
+
+
+def _named_vectors_for_record(emb: dict) -> dict[str, list[list[float]]]:
+    explicit = emb.get("weaviate_named_vectors")
+    if isinstance(explicit, dict) and explicit:
+        payload: dict[str, list[list[float]]] = {}
+        for name, vecs in explicit.items():
+            arr = np.asarray(vecs)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            if arr.ndim != 2 or arr.shape[0] <= 0 or arr.shape[1] != 128:
+                raise ValueError(
+                    f"Invalid named vector '{name}' for claim_id={_claim_identity(emb)}: shape={arr.shape}. "
+                    "Expected [T,128]."
+                )
+            payload[str(name)] = arr.astype(np.float32, copy=False).tolist()
+        return payload
+    return {"colbert": _colbert_vectors_for_weaviate(emb)}
+
+
+def prepare_embedding_record_for_storage(
+    emb: dict,
+    *,
+    canonical_dataset_id: str | None = None,
+) -> dict:
+    """
+    Enrich an embedded claim record with explicit Weaviate-ready fields.
+    This keeps persisted dataset records self-contained for later upload.
+    """
+    record = dict(emb)
+    if canonical_dataset_id and not record.get("canonical_dataset_id"):
+        record["canonical_dataset_id"] = str(canonical_dataset_id)
+    record.setdefault("record_schema_version", PERSISTED_RECORD_SCHEMA_VERSION)
+    record["weaviate_patent_properties"] = record.get("weaviate_patent_properties") or _build_patent_properties(record)
+    record["weaviate_claim_properties"] = record.get("weaviate_claim_properties") or _build_claim_properties(record)
+    record["weaviate_patent_uuid"] = _patent_uuid_for_record(record)
+    record["weaviate_claim_uuid"] = _claim_uuid_for_record(record)
+    record["weaviate_named_vectors"] = record.get("weaviate_named_vectors") or _named_vectors_for_record(record)
+    return record
+
+
 def _build_patent_metadata_record(emb: dict) -> dict:
     doc_id = str(emb.get("doc_id") or "").strip()
     record: dict = {"doc_id": doc_id}
@@ -204,6 +352,56 @@ def _open_lmdb_env(path: Path, *, readonly: bool = False) -> lmdb.Environment:
         max_dbs=1,
     )
 
+
+def open_dataset_embeddings_lmdb(path: Path | str, *, readonly: bool = False) -> lmdb.Environment:
+    return _open_lmdb_env(Path(path), readonly=readonly)
+
+
+def write_dataset_embeddings_batch(
+    lmdb_env: lmdb.Environment,
+    embeddings: list[dict],
+    *,
+    canonical_dataset_id: str | None = None,
+) -> dict[str, Any]:
+    rows: list[tuple[str, bytes]] = []
+    fieldnames: set[str] = set()
+    vector_names: set[str] = set()
+    doc_ids: set[str] = set()
+
+    for emb in embeddings:
+        prepared = prepare_embedding_record_for_storage(
+            emb,
+            canonical_dataset_id=canonical_dataset_id,
+        )
+        key = _dataset_embedding_storage_key(prepared)
+        rows.append((key, _serialize_dataset_embedding_record(prepared)))
+        doc_id = str(prepared.get("doc_id") or "").strip()
+        if doc_id:
+            doc_ids.add(doc_id)
+        fieldnames.update(prepared.keys())
+        vector_names.update((prepared.get("weaviate_named_vectors") or {"colbert": None}).keys())
+
+    _write_lmdb_bytes(lmdb_env, rows)
+    return {
+        "record_count": len(rows),
+        "doc_ids": doc_ids,
+        "fieldnames": fieldnames,
+        "vector_names": vector_names,
+    }
+
+
+def load_dataset_embeddings_from_lmdb(path: Path | str):
+    env = open_dataset_embeddings_lmdb(path, readonly=True)
+    try:
+        with env.begin(write=False) as txn:
+            cursor = txn.cursor()
+            for _, payload in cursor:
+                if payload is None:
+                    continue
+                yield _deserialize_dataset_embedding_record(payload)
+    finally:
+        env.close()
+
 def _serialize_colbert(vectors) -> bytes:
     buffer = io.BytesIO()
     if isinstance(vectors, dict) and "data" in vectors and "scale" in vectors:
@@ -224,6 +422,61 @@ def _deserialize_json_record(payload: bytes) -> dict:
         return value if isinstance(value, dict) else {}
     except Exception:
         return {}
+
+
+def _dataset_embedding_storage_key(emb: dict) -> str:
+    claim_uuid = str(emb.get("weaviate_claim_uuid") or "").strip()
+    if claim_uuid:
+        return claim_uuid
+    return _claim_identity(emb)
+
+
+def _dataset_embedding_metadata_record(emb: dict) -> dict:
+    record: dict[str, Any] = {}
+    for key, value in emb.items():
+        if key in DATASET_LMDB_VECTOR_EXCLUDE_KEYS:
+            continue
+        record[str(key)] = _to_jsonable(value)
+    return record
+
+
+def _serialize_dataset_embedding_record(emb: dict) -> bytes:
+    colbert_vectors = _select_full_colbert_vectors_for_lmdb(emb)
+    if colbert_vectors is None or not getattr(colbert_vectors, "size", 0):
+        raise ValueError(
+            f"Dataset LMDB record missing token vectors for claim_id={_claim_identity(emb)} "
+            f"doc_id={emb.get('doc_id', '')}"
+        )
+    metadata_json = json.dumps(
+        _dataset_embedding_metadata_record(emb),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    buffer = io.BytesIO()
+    np.savez(
+        buffer,
+        metadata=np.asarray(metadata_json),
+        colbert=colbert_vectors.astype(np.float32, copy=False),
+    )
+    return buffer.getvalue()
+
+
+def _deserialize_dataset_embedding_record(payload: bytes) -> dict:
+    buffer = io.BytesIO(payload)
+    obj = np.load(buffer, allow_pickle=False)
+    try:
+        metadata_raw = _np_scalar_to_str(obj["metadata"]) if "metadata" in obj else ""
+        metadata = json.loads(metadata_raw) if metadata_raw else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        colbert = np.asarray(obj["colbert"]).astype(np.float32, copy=False)
+        if colbert.ndim == 1:
+            colbert = colbert.reshape(1, -1)
+        metadata["colbert"] = colbert
+        return metadata
+    finally:
+        if isinstance(obj, np.lib.npyio.NpzFile):
+            obj.close()
 
 
 def _select_full_colbert_vectors_for_lmdb(emb: dict) -> np.ndarray | None:
@@ -484,26 +737,140 @@ def load_claim_payloads_from_lmdb(claim_ids: list[str]) -> dict[str, dict]:
 
 
 def get_client():
-    return weaviate.connect_to_local(
-        host="localhost",
-        port=8080,
-        grpc_port=50051,
+    global _WEAVIATE_CLIENT_DEBUG_PRINTED
+    additional_config = AdditionalConfig(
+        timeout=Timeout(
+            init=WEAVIATE_TIMEOUT_INIT,
+            query=WEAVIATE_TIMEOUT_QUERY,
+            insert=WEAVIATE_TIMEOUT_INSERT,
+        )
+    )
+    if WEAVIATE_CONNECT_MODE == "cloud":
+        if not WEAVIATE_CLUSTER_URL:
+            raise ValueError("WEAVIATE_CLUSTER_URL is required when WEAVIATE_CONNECT_MODE=cloud.")
+        if not WEAVIATE_API_KEY:
+            raise ValueError("WEAVIATE_API_KEY is required when WEAVIATE_CONNECT_MODE=cloud.")
+        return weaviate.connect_to_weaviate_cloud(
+            cluster_url=WEAVIATE_CLUSTER_URL,
+            auth_credentials=Auth.api_key(WEAVIATE_API_KEY),
+            additional_config=additional_config,
+        )
+    if not _WEAVIATE_CLIENT_DEBUG_PRINTED:
+        print(
+            "[weaviate] connect_to_custom "
+            f"http={WEAVIATE_HTTP_HOST}:{WEAVIATE_HTTP_PORT} "
+            f"grpc={WEAVIATE_GRPC_HOST}:{WEAVIATE_GRPC_PORT} "
+            f"http_secure={int(bool(WEAVIATE_HTTP_SECURE))} "
+            f"grpc_secure={int(bool(WEAVIATE_GRPC_SECURE))}"
+        )
+        _WEAVIATE_CLIENT_DEBUG_PRINTED = True
+    return weaviate.connect_to_custom(
+        http_host=WEAVIATE_HTTP_HOST,
+        http_port=WEAVIATE_HTTP_PORT,
+        http_secure=WEAVIATE_HTTP_SECURE,
+        grpc_host=WEAVIATE_GRPC_HOST,
+        grpc_port=WEAVIATE_GRPC_PORT,
+        grpc_secure=WEAVIATE_GRPC_SECURE,
+        additional_config=additional_config,
     )
 
 
-def _claim_hnsw_create_config():
+def _format_batch_errors(errors: Any, *, limit: int = 3) -> str:
+    if isinstance(errors, dict):
+        try:
+            items = [errors[key] for key in sorted(errors)]
+        except Exception:
+            items = list(errors.values())
+    else:
+        try:
+            items = list(errors or [])
+        except Exception:
+            items = [errors]
+    if not items:
+        return "unknown error"
+    preview = " | ".join(str(item) for item in items[:limit])
+    remaining = len(items) - min(len(items), limit)
+    if remaining > 0:
+        preview += f" | ... (+{remaining} more)"
+    return preview
+
+
+def _insert_many_with_retry(collection, objects: list[DataObject], *, kind: str) -> None:
+    try:
+        result = collection.data.insert_many(objects)
+    except WeaviateBatchError as exc:
+        message = str(exc).lower()
+        if "deadline exceeded" in message and len(objects) > 1:
+            midpoint = max(1, len(objects) // 2)
+            print(
+                f"[retry] {kind} batch of {len(objects)} hit gRPC deadline; "
+                f"retrying as {midpoint}+{len(objects) - midpoint}"
+            )
+            _insert_many_with_retry(collection, objects[:midpoint], kind=kind)
+            _insert_many_with_retry(collection, objects[midpoint:], kind=kind)
+            return
+        raise
+
+    if getattr(result, "has_errors", False):
+        error_text = _format_batch_errors(getattr(result, "errors", None))
+        raise RuntimeError(
+            f"{kind} insert_many had {len(getattr(result, 'errors', []) or [])} error(s) "
+            f"for batch size {len(objects)}. {error_text}"
+        )
+
+
+def _resolved_muvera_params(overrides: dict | None = None) -> dict[str, int | None]:
+    params = {
+        "ksim": WEAVIATE_MUVERA_KSIM,
+        "dprojections": WEAVIATE_MUVERA_DPROJECTIONS,
+        "repetitions": WEAVIATE_MUVERA_REPETITIONS,
+    }
+    if overrides:
+        for key in ("ksim", "dprojections", "repetitions"):
+            if key in overrides and overrides[key] is not None:
+                params[key] = int(overrides[key])
+    return params
+
+
+def _resolved_pq_params(overrides: dict | None = None) -> dict[str, int | bool]:
+    params: dict[str, int | bool] = {
+        "enabled": WEAVIATE_PQ_ENABLED,
+        "centroids": WEAVIATE_PQ_CENTROIDS,
+        "segments": WEAVIATE_PQ_SEGMENTS,
+        "training_limit": WEAVIATE_PQ_TRAINING_LIMIT,
+        "bit_compression": WEAVIATE_PQ_BIT_COMPRESSION,
+    }
+    if overrides:
+        for key in ("enabled", "centroids", "segments", "training_limit", "bit_compression"):
+            if key not in overrides or overrides[key] is None:
+                continue
+            if key in {"enabled", "bit_compression"}:
+                params[key] = bool(overrides[key])
+            else:
+                params[key] = int(overrides[key])
+    return params
+
+
+def _claim_muvera_encoding(muvera_params: dict | None = None):
+    params = _resolved_muvera_params(muvera_params)
+    kwargs = {key: value for key, value in params.items() if value is not None}
+    return Configure.VectorIndex.MultiVector.Encoding.muvera(**kwargs)
+
+
+def _claim_hnsw_create_config(pq_params: dict | None = None):
+    pq = _resolved_pq_params(pq_params)
     vector_cache_max_objects = (
         WEAVIATE_HNSW_VECTOR_CACHE_MAX_OBJECTS if WEAVIATE_HNSW_VECTOR_CACHE_MAX_OBJECTS > 0 else None
     )
     quantizer = None
-    if WEAVIATE_PQ_ENABLED:
+    if bool(pq["enabled"]):
         pq_kwargs = {
-            "centroids": WEAVIATE_PQ_CENTROIDS,
-            "training_limit": WEAVIATE_PQ_TRAINING_LIMIT,
-            "bit_compression": WEAVIATE_PQ_BIT_COMPRESSION,
+            "centroids": int(pq["centroids"]),
+            "training_limit": int(pq["training_limit"]),
+            "bit_compression": bool(pq["bit_compression"]),
         }
-        if WEAVIATE_PQ_SEGMENTS > 0:
-            pq_kwargs["segments"] = WEAVIATE_PQ_SEGMENTS
+        if int(pq["segments"]) > 0:
+            pq_kwargs["segments"] = int(pq["segments"])
         quantizer = Configure.VectorIndex.Quantizer.pq(**pq_kwargs)
     return Configure.VectorIndex.hnsw(
         ef=WEAVIATE_HNSW_EF,
@@ -516,20 +883,21 @@ def _claim_hnsw_create_config():
     )
 
 
-def _claim_hnsw_update_config():
+def _claim_hnsw_update_config(pq_params: dict | None = None):
     if Reconfigure is None:
         return None
+    pq = _resolved_pq_params(pq_params)
     vector_cache_max_objects = (
         WEAVIATE_HNSW_VECTOR_CACHE_MAX_OBJECTS if WEAVIATE_HNSW_VECTOR_CACHE_MAX_OBJECTS > 0 else None
     )
     pq_kwargs = {
-        "enabled": WEAVIATE_PQ_ENABLED,
-        "centroids": WEAVIATE_PQ_CENTROIDS,
-        "training_limit": WEAVIATE_PQ_TRAINING_LIMIT,
-        "bit_compression": WEAVIATE_PQ_BIT_COMPRESSION,
+        "enabled": bool(pq["enabled"]),
+        "centroids": int(pq["centroids"]),
+        "training_limit": int(pq["training_limit"]),
+        "bit_compression": bool(pq["bit_compression"]),
     }
-    if WEAVIATE_PQ_SEGMENTS > 0:
-        pq_kwargs["segments"] = WEAVIATE_PQ_SEGMENTS
+    if int(pq["segments"]) > 0:
+        pq_kwargs["segments"] = int(pq["segments"])
     quantizer = Reconfigure.VectorIndex.Quantizer.pq(**pq_kwargs)
     return Reconfigure.VectorIndex.hnsw(
         ef=WEAVIATE_HNSW_EF,
@@ -542,18 +910,19 @@ def _claim_hnsw_update_config():
     )
 
 
-def _maybe_update_claim_hnsw(client):
+def _maybe_update_claim_hnsw(client, *, pq_params: dict | None = None):
     if not WEAVIATE_APPLY_HNSW_UPDATE:
         return
     if Reconfigure is None:
         print("[warn] weaviate Reconfigure API unavailable; skipping Claim HNSW update")
         return
+    pq = _resolved_pq_params(pq_params)
     try:
         claim_collection = client.collections.get("Claim")
         claim_collection.config.update(
             vector_config=Reconfigure.Vectors.update(
                 name="colbert",
-                vector_index_config=_claim_hnsw_update_config(),
+                vector_index_config=_claim_hnsw_update_config(pq_params),
             )
         )
         print(
@@ -563,10 +932,11 @@ def _maybe_update_claim_hnsw(client):
             f"factor={WEAVIATE_HNSW_DYNAMIC_EF_FACTOR} "
             f"flatSearchCutoff={WEAVIATE_HNSW_FLAT_SEARCH_CUTOFF} "
             f"vectorCacheMaxObjects={WEAVIATE_HNSW_VECTOR_CACHE_MAX_OBJECTS or 'unchanged'} "
-            f"pqEnabled={WEAVIATE_PQ_ENABLED} "
-            f"pqCentroids={WEAVIATE_PQ_CENTROIDS} "
-            f"pqSegments={WEAVIATE_PQ_SEGMENTS or 'auto'} "
-            f"pqTrainingLimit={WEAVIATE_PQ_TRAINING_LIMIT}"
+            f"pqEnabled={bool(pq['enabled'])} "
+            f"pqCentroids={int(pq['centroids'])} "
+            f"pqSegments={int(pq['segments']) or 'auto'} "
+            f"pqTrainingLimit={int(pq['training_limit'])} "
+            f"pqBitCompression={bool(pq['bit_compression'])}"
         )
     except Exception as e:
         print(f"[warn] Failed to update Claim HNSW search config: {e}")
@@ -591,8 +961,15 @@ def _ensure_collection_properties(client, collection_name: str, props: list[Prop
         print(f"[warn] Could not verify properties for collection {collection_name}: {e}")
 
 
-def ensure_collection(client):
+def ensure_collection(
+    client,
+    *,
+    muvera_params: dict | None = None,
+    pq_params: dict | None = None,
+    update_existing_claim_hnsw: bool = True,
+):
     existing = client.collections.list_all()
+    claim_existed = "Claim" in existing
 
     patent_props = [
         Property(name="doc_id", data_type=DataType.TEXT),
@@ -628,8 +1005,8 @@ def ensure_collection(client):
                 vector_config=[
                     Configure.MultiVectors.self_provided(
                         name="colbert",
-                        encoding=Configure.VectorIndex.MultiVector.Encoding.muvera(),
-                        vector_index_config=_claim_hnsw_create_config(),
+                        encoding=_claim_muvera_encoding(muvera_params),
+                        vector_index_config=_claim_hnsw_create_config(pq_params),
                     ),
                 ],
             )
@@ -648,15 +1025,58 @@ def ensure_collection(client):
         print("Collection Claim already exists")
         _ensure_collection_properties(client, "Claim", claim_props)
 
-    if "Claim" in client.collections.list_all():
-        _maybe_update_claim_hnsw(client)
+    if claim_existed and update_existing_claim_hnsw and "Claim" in client.collections.list_all():
+        _maybe_update_claim_hnsw(client, pq_params=pq_params)
 
 
-def store_embeddings(embeddings):
+def reset_weaviate_state(
+    *,
+    reset_collections: tuple[str, ...] = PARAMETER_SWEEP_RESET_COLLECTIONS,
+    muvera_params: dict | None = None,
+    pq_params: dict | None = None,
+) -> tuple[str, ...]:
+    """
+    Reset Patent and Claim for parameter sweeps.
+    Claim alone is sufficient for retrieval correctness, but we reset Patent too because
+    store_embeddings repopulates both collections and sweep disk-usage measurements are
+    taken from the full Weaviate data directory.
+    """
+    client = get_client()
+    try:
+        existing = set(client.collections.list_all())
+        deleted: list[str] = []
+        for name in reset_collections:
+            if name in existing:
+                client.collections.delete(name)
+                deleted.append(name)
+                print(f"[reset] Deleted collection: {name}")
+        ensure_collection(
+            client,
+            muvera_params=muvera_params,
+            pq_params=pq_params,
+            update_existing_claim_hnsw=False,
+        )
+        return tuple(deleted)
+    finally:
+        client.close()
+
+
+def store_embeddings(
+    embeddings,
+    *,
+    muvera_params: dict | None = None,
+    pq_params: dict | None = None,
+    write_lmdb: bool | None = None,
+):
     client = get_client()
     lmdb_envs_by_path: dict[Path, lmdb.Environment] = {}
     try:
-        ensure_collection(client)
+        ensure_collection(
+            client,
+            muvera_params=muvera_params,
+            pq_params=pq_params,
+            update_existing_claim_hnsw=False,
+        )
         claim_collection = client.collections.get("Claim")
         patent_collection = client.collections.get("Patent")
 
@@ -683,65 +1103,47 @@ def store_embeddings(embeddings):
                 "Upgrade weaviate-client and recreate the collection."
             )
 
-        print(f"Uploading {len(embeddings)} claim embeddings...")
+        prepared_embeddings = [prepare_embedding_record_for_storage(emb) for emb in embeddings]
+        write_lmdb_enabled = WRITE_LMDB if write_lmdb is None else bool(write_lmdb)
+
+        print(f"Uploading {len(prepared_embeddings)} claim embeddings...")
         written_doc_ids: set[str] = set()
         patent_by_doc: dict[str, dict] = {}
-        for emb in embeddings:
-            doc_id = str(emb.get("doc_id") or "").strip()
+        patent_uuid_by_doc: dict[str, str] = {}
+        for emb in prepared_embeddings:
+            patent_props = emb.get("weaviate_patent_properties") or _build_patent_properties(emb)
+            doc_id = str(patent_props.get("doc_id") or emb.get("doc_id") or "").strip()
             if not doc_id or doc_id in patent_by_doc:
                 continue
-            authors = emb.get("authors", [])
-            if isinstance(authors, str):
-                authors = [a.strip() for a in authors.split(";") if a.strip()]
-            patent_by_doc[doc_id] = {
-                "doc_id": doc_id,
-                "filing_date": emb.get("filing_date", ""),
-                "classification": emb.get("classification", ""),
-                "authors": authors if isinstance(authors, list) else [],
-                "title": emb.get("title", ""),
-                "kind": emb.get("kind", ""),
-            }
+            patent_by_doc[doc_id] = patent_props
+            patent_uuid_by_doc[doc_id] = _patent_uuid_for_record(emb)
 
         if patent_by_doc:
             patent_objects = [
                 DataObject(
                     properties=props,
-                    uuid=_stable_uuid("patent", str(props.get("doc_id", ""))),
+                    uuid=patent_uuid_by_doc.get(str(props.get("doc_id", "")).strip(), _stable_uuid("patent", str(props.get("doc_id", "")))),
                 )
                 for props in patent_by_doc.values()
             ]
-            result = patent_collection.data.insert_many(patent_objects)
-            if result.has_errors:
-                print(f"[warn] patent batch insert had {len(result.errors)} error(s)")
+            _insert_many_with_retry(patent_collection, patent_objects, kind="patent")
 
-        for start in range(0, len(embeddings), WEAVIATE_BATCH_SIZE):
-            batch = embeddings[start:start + WEAVIATE_BATCH_SIZE]
+        for start in range(0, len(prepared_embeddings), WEAVIATE_BATCH_SIZE):
+            batch = prepared_embeddings[start:start + WEAVIATE_BATCH_SIZE]
             objects = []
             for emb in batch:
                 claim_identity = _claim_identity(emb)
-                claim_number = emb.get("claim_number")
-                if isinstance(claim_number, str) and claim_number.isdigit():
-                    claim_number = int(claim_number)
-                props = {
-                    "claim_id": emb.get("claim_id", "") or claim_identity,
-                    "claim_type": emb.get("claim_type", ""),
-                    "doc_id": emb.get("doc_id", ""),
-                    "text": emb.get("text") or emb.get("chunk", ""),
-                }
-                if isinstance(claim_number, int):
-                    props["claim_number"] = claim_number
-                vecs = {"colbert": _colbert_vectors_for_weaviate(emb)}
+                props = emb.get("weaviate_claim_properties") or _build_claim_properties(emb)
+                vecs = _named_vectors_for_record(emb)
                 objects.append(
                     DataObject(
                         properties=props,
                         vector=vecs,
-                        uuid=_stable_uuid("claim", claim_identity),
+                        uuid=_claim_uuid_for_record(emb),
                     )
                 )
 
-            result = claim_collection.data.insert_many(objects)
-            if result.has_errors:
-                print(f"[warn] batch insert had {len(result.errors)} error(s)")
+            _insert_many_with_retry(claim_collection, objects, kind="claim")
 
             lmdb_rows_by_path: dict[Path, list[tuple[str, list]]] = {}
             patent_metadata_rows: list[tuple[str, dict]] = []
@@ -771,7 +1173,7 @@ def store_embeddings(embeddings):
                         )
                     )
 
-                if WRITE_LMDB:
+                if write_lmdb_enabled:
                     colbert_variants = emb.get("colbert_variants") or {}
                     if colbert_variants:
                         for name, vecs in colbert_variants.items():
@@ -812,21 +1214,21 @@ def store_embeddings(embeddings):
                                 )
                                 lmdb_rows_by_path.setdefault(lmdb_path, []).append((key, colbert_vectors))
 
-            if patent_metadata_rows:
+            if write_lmdb_enabled and patent_metadata_rows:
                 env = lmdb_envs_by_path.get(LMDB_PATH_PATENT_METADATA)
                 if env is None:
                     env = _open_lmdb_env(LMDB_PATH_PATENT_METADATA)
                     lmdb_envs_by_path[LMDB_PATH_PATENT_METADATA] = env
                 _write_lmdb_json_records(env, patent_metadata_rows)
 
-            if claim_payload_rows:
+            if write_lmdb_enabled and claim_payload_rows:
                 env = lmdb_envs_by_path.get(LMDB_PATH_CLAIM_PAYLOAD)
                 if env is None:
                     env = _open_lmdb_env(LMDB_PATH_CLAIM_PAYLOAD)
                     lmdb_envs_by_path[LMDB_PATH_CLAIM_PAYLOAD] = env
                 _write_lmdb_claim_payloads(env, claim_payload_rows)
 
-            if WRITE_LMDB:
+            if write_lmdb_enabled:
                 for lmdb_path, rows in lmdb_rows_by_path.items():
                     if rows:
                         env = lmdb_envs_by_path.get(lmdb_path)
@@ -835,7 +1237,7 @@ def store_embeddings(embeddings):
                             lmdb_envs_by_path[lmdb_path] = env
                         _write_lmdb_vectors(env, rows)
 
-        print(f"Uploaded {len(embeddings)} claims to database.")
+        print(f"Uploaded {len(prepared_embeddings)} claims to database.")
     finally:
         for env in lmdb_envs_by_path.values():
             env.close()

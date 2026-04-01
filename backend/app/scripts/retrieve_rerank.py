@@ -9,6 +9,7 @@ Minimal retrieval + ColBERT-style reranking utilities.
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
 import json
 import math
@@ -20,13 +21,14 @@ from typing import Iterable
 
 import numpy as np
 import requests
+from weaviate.collections.classes.filters import Filter
 
 from backend.app.embed import embed_query_tokens_for_shard, model, normalize_text_for_embedding, tokenizer
 from backend.app.services.download import rich_to_plain
 from backend.app.store import (
     LMDB_PATH_128_F16,
     LMDB_PATH_128_F32,
-    load_claim_payloads_from_lmdb,
+    get_client,
     load_colbert_from_lmdb,
     resolve_lmdb_path,
 )
@@ -36,8 +38,28 @@ from backend.app.vector_config import (
 )
 
 
-WEAVIATE_GRAPHQL = os.environ.get("WEAVIATE_GRAPHQL", "http://localhost:8080/v1/graphql")
-WEAVIATE_OBJECTS = os.environ.get("WEAVIATE_OBJECTS", "http://localhost:8080/v1/objects")
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+_DEFAULT_HTTP_HOST = os.environ.get(
+    "WEAVIATE_HTTP_HOST",
+    os.environ.get("WEAVIATE_LOCAL_HOST", "127.0.0.1"),
+).strip() or "127.0.0.1"
+_DEFAULT_HTTP_PORT = int(
+    os.environ.get(
+        "WEAVIATE_HTTP_PORT",
+        os.environ.get("WEAVIATE_LOCAL_PORT", "8080"),
+    )
+)
+_DEFAULT_HTTP_SCHEME = "https" if _env_bool("WEAVIATE_HTTP_SECURE", False) else "http"
+_DEFAULT_WEAVIATE_HTTP_BASE = f"{_DEFAULT_HTTP_SCHEME}://{_DEFAULT_HTTP_HOST}:{_DEFAULT_HTTP_PORT}"
+
+WEAVIATE_GRAPHQL = os.environ.get("WEAVIATE_GRAPHQL", f"{_DEFAULT_WEAVIATE_HTTP_BASE}/v1/graphql")
+WEAVIATE_OBJECTS = os.environ.get("WEAVIATE_OBJECTS", f"{_DEFAULT_WEAVIATE_HTTP_BASE}/v1/objects")
 
 
 SHARD_TO_PATH = {
@@ -46,6 +68,10 @@ SHARD_TO_PATH = {
 }
 VALID_RETRIEVAL_MODES = ("vector", "bm25", "hybrid")
 VALID_RERANK_SOURCES = ("lmdb", "weaviate")
+WEAVIATE_VECTOR_FETCH_BATCH_SIZE = max(1, int(os.environ.get("WEAVIATE_VECTOR_FETCH_BATCH_SIZE", "128")))
+WEAVIATE_VECTOR_FETCH_MODE = os.environ.get("WEAVIATE_VECTOR_FETCH_MODE", "auto").strip().lower() or "auto"
+
+_WEAVIATE_VECTOR_CLIENT = None
 
 
 def _normalize_retrieval_mode(value: str | None) -> str:
@@ -86,7 +112,7 @@ FORCE_CLIENT_HYBRID = os.environ.get("FORCE_CLIENT_HYBRID", "1").strip() not in 
     "no",
     "NO",
 }
-DEFAULT_RERANK_SOURCE = os.environ.get("RERANK_SOURCE", "lmdb").strip().lower()
+DEFAULT_RERANK_SOURCE = os.environ.get("RERANK_SOURCE", "weaviate").strip().lower()
 if DEFAULT_RERANK_SOURCE not in VALID_RERANK_SOURCES:
     raise ValueError(
         f"Invalid RERANK_SOURCE='{DEFAULT_RERANK_SOURCE}'. Allowed: {list(VALID_RERANK_SOURCES)}"
@@ -115,22 +141,6 @@ def _post_graphql(query: str) -> dict:
     if payload.get("errors"):
         raise RuntimeError(payload["errors"])
     return payload["data"]
-
-
-def _hydrate_claim_hits_from_lmdb(hits: list[ClaimHit]) -> None:
-    claim_ids = [h.claim_id for h in hits if h.claim_id]
-    if not claim_ids:
-        return
-    payload_map = load_claim_payloads_from_lmdb(claim_ids)
-    for h in hits:
-        payload = payload_map.get(h.claim_id)
-        if not payload:
-            continue
-        if not h.doc_id:
-            h.doc_id = str(payload.get("doc_id") or "")
-        if not h.claim_type:
-            h.claim_type = str(payload.get("claim_type") or "")
-        h.text = rich_to_plain(str(payload.get("text") or ""))
 
 
 def _embed_query_dense(query: str) -> np.ndarray:
@@ -213,13 +223,87 @@ def _query_claim_rows(retrieval_args: str) -> list[dict]:
     gql = (
         "{ Get { Claim("
         f"{retrieval_args}"
-        ") { claim_id doc_id _additional { id distance } } } }"
+        ") { claim_id doc_id claim_type text _additional { id distance } } } }"
     )
     data = _post_graphql(gql)
     return data.get("Get", {}).get("Claim", []) or []
 
 
-def fetch_colbert_vectors_from_weaviate(object_ids: list[str]) -> dict[str, np.ndarray]:
+def _coerce_token_matrix(value: object, *, identity: str) -> np.ndarray:
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.ndim != 2 or arr.shape[0] <= 0:
+        raise ValueError(f"Weaviate vector for {identity} is empty or malformed: shape={arr.shape}")
+    if arr.shape[1] != 128:
+        raise ValueError(f"Weaviate vector for {identity} must be 128-d, got shape={arr.shape}.")
+    return arr
+
+
+def _get_weaviate_vector_client():
+    global _WEAVIATE_VECTOR_CLIENT
+    if _WEAVIATE_VECTOR_CLIENT is None:
+        _WEAVIATE_VECTOR_CLIENT = get_client()
+
+        def _close_client() -> None:
+            global _WEAVIATE_VECTOR_CLIENT
+            client = _WEAVIATE_VECTOR_CLIENT
+            _WEAVIATE_VECTOR_CLIENT = None
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+        atexit.register(_close_client)
+    return _WEAVIATE_VECTOR_CLIENT
+
+
+def _chunked(values: list[str], size: int) -> Iterable[list[str]]:
+    for start in range(0, len(values), max(1, int(size))):
+        yield values[start:start + max(1, int(size))]
+
+
+def _fetch_colbert_vectors_from_weaviate_batched(object_ids: list[str]) -> dict[str, np.ndarray]:
+    ids = [str(oid).strip() for oid in object_ids if str(oid).strip()]
+    if not ids:
+        return {}
+    client = _get_weaviate_vector_client()
+    collection = client.collections.get("Claim")
+    out: dict[str, np.ndarray] = {}
+    for chunk in _chunked(ids, WEAVIATE_VECTOR_FETCH_BATCH_SIZE):
+        response = collection.query.fetch_objects(
+            limit=len(chunk),
+            filters=Filter.by_id().contains_any(chunk),
+            include_vector=[WEAVIATE_NAMED_VECTOR],
+            return_properties=False,
+        )
+        for obj in response.objects:
+            oid = str(getattr(obj, "uuid", "") or "").strip()
+            vectors = getattr(obj, "vector", None)
+            if not oid:
+                continue
+            if not isinstance(vectors, dict):
+                raise ValueError(
+                    f"Weaviate object {oid} missing named vectors map; expected dict with key '{WEAVIATE_NAMED_VECTOR}'."
+                )
+            if WEAVIATE_NAMED_VECTOR not in vectors:
+                raise ValueError(
+                    f"Weaviate object {oid} missing named vector '{WEAVIATE_NAMED_VECTOR}'. "
+                    f"Available keys={sorted(vectors.keys())}"
+                )
+            out[oid] = _coerce_token_matrix(vectors[WEAVIATE_NAMED_VECTOR], identity=oid)
+
+        missing = [oid for oid in chunk if oid not in out]
+        if missing:
+            raise RuntimeError(
+                f"Batched Weaviate vector fetch returned {len(chunk) - len(missing)}/{len(chunk)} objects. "
+                f"Missing ids: {missing[:5]}{'...' if len(missing) > 5 else ''}"
+            )
+    return out
+
+
+def _fetch_colbert_vectors_from_weaviate_http(object_ids: list[str]) -> dict[str, np.ndarray]:
     """
     Fetch token-level ColBERT vectors from Weaviate object REST API.
     Endpoint used: GET /v1/objects/Claim/{uuid}?include=vector
@@ -245,21 +329,31 @@ def fetch_colbert_vectors_from_weaviate(object_ids: list[str]) -> dict[str, np.n
                 f"Weaviate object {oid} missing named vector '{WEAVIATE_NAMED_VECTOR}'. "
                 f"Available keys={sorted(vectors.keys())}"
             )
-        token_matrix = np.asarray(vectors[WEAVIATE_NAMED_VECTOR], dtype=np.float32)
-        if token_matrix.ndim == 1:
-            token_matrix = token_matrix.reshape(1, -1)
-        if token_matrix.ndim != 2 or token_matrix.shape[0] <= 0:
-            raise ValueError(f"Weaviate vector for {oid} is empty or malformed: shape={token_matrix.shape}")
-        if token_matrix.shape[1] != 128:
-            raise ValueError(
-                f"Weaviate vector for {oid} must be 128-d, got shape={token_matrix.shape}."
-            )
-        out[oid] = token_matrix
+        out[oid] = _coerce_token_matrix(vectors[WEAVIATE_NAMED_VECTOR], identity=oid)
 
     missing = [oid for oid in ids if oid not in out]
     if missing:
         raise RuntimeError(f"Failed to fetch vectors for object ids: {missing}")
     return out
+
+
+def fetch_colbert_vectors_from_weaviate(object_ids: list[str]) -> dict[str, np.ndarray]:
+    ids = [str(oid).strip() for oid in object_ids if str(oid).strip()]
+    if not ids:
+        return {}
+    mode = WEAVIATE_VECTOR_FETCH_MODE
+    if mode not in {"auto", "batch", "http"}:
+        raise ValueError(
+            f"Invalid WEAVIATE_VECTOR_FETCH_MODE='{mode}'. Allowed=['auto', 'batch', 'http']"
+        )
+    if mode in {"auto", "batch"}:
+        try:
+            return _fetch_colbert_vectors_from_weaviate_batched(ids)
+        except Exception as exc:
+            if mode == "batch":
+                raise
+            print(f"[warn] batched Weaviate vector fetch failed; falling back to per-object HTTP fetch: {exc}")
+    return _fetch_colbert_vectors_from_weaviate_http(ids)
 
 
 def _rows_to_hits(items: list[dict]) -> list[ClaimHit]:
@@ -272,6 +366,8 @@ def _rows_to_hits(items: list[dict]) -> list[ClaimHit]:
                 distance=addl.get("distance"),
                 claim_id=it.get("claim_id", ""),
                 doc_id=it.get("doc_id", ""),
+                claim_type=str(it.get("claim_type") or ""),
+                text=rich_to_plain(str(it.get("text") or "")),
             )
         )
     return hits
@@ -307,8 +403,15 @@ def _fuse_hybrid_hits(
                 continue
             if key not in hit_by_key:
                 hit_by_key[key] = hit
-            elif hit_by_key[key].distance is None and hit.distance is not None:
-                hit_by_key[key].distance = hit.distance
+            else:
+                if hit_by_key[key].distance is None and hit.distance is not None:
+                    hit_by_key[key].distance = hit.distance
+                if not hit_by_key[key].doc_id and hit.doc_id:
+                    hit_by_key[key].doc_id = hit.doc_id
+                if not hit_by_key[key].claim_type and hit.claim_type:
+                    hit_by_key[key].claim_type = hit.claim_type
+                if not hit_by_key[key].text and hit.text:
+                    hit_by_key[key].text = hit.text
             score_by_key[key] = score_by_key.get(key, 0.0) + (w / float(rrf_k + rank))
 
     ranked_keys = sorted(score_by_key, key=lambda k: score_by_key[k], reverse=True)[: int(limit)]
@@ -369,7 +472,6 @@ def retrieve_claims(
 
     if mode == "hybrid" and 0.0 < alpha < 1.0 and FORCE_CLIENT_HYBRID:
         hits = _retrieve_hybrid_client_fusion(query, int(limit), shard, alpha)
-        _hydrate_claim_hits_from_lmdb(hits)
         return hits
 
     try:
@@ -380,7 +482,6 @@ def retrieve_claims(
         print(f"[warn] server-side hybrid failed; using client-side fusion fallback: {e}")
         hits = _retrieve_hybrid_client_fusion(query, int(limit), shard, alpha)
 
-    _hydrate_claim_hits_from_lmdb(hits)
     return hits
 
 
@@ -530,22 +631,10 @@ def lookup_patent(doc_id: str, limit: int = 200) -> list[ClaimHit]:
     gql = (
         "{ Get { Claim("
         f"where:{where}, limit:{int(limit)}"
-        ") { claim_id doc_id _additional { id } } } }"
+        ") { claim_id doc_id claim_type text _additional { id } } } }"
     )
     data = _post_graphql(gql)
-    items = data["Get"]["Claim"]
-    hits: list[ClaimHit] = []
-    for it in items:
-        addl = it.get("_additional") or {}
-        hits.append(
-            ClaimHit(
-                uuid=addl.get("id", ""),
-                claim_id=it.get("claim_id", ""),
-                doc_id=it.get("doc_id", ""),
-            )
-        )
-    _hydrate_claim_hits_from_lmdb(hits)
-    return hits
+    return _rows_to_hits(data["Get"]["Claim"])
 
 
 def _claim_id_exists(claim_id: str) -> bool:
