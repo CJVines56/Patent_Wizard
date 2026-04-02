@@ -1,5 +1,4 @@
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import InMemorySaver
 from saby_classes import Patent_Miner_State
 
 from saby_node_I import (
@@ -8,11 +7,10 @@ from saby_node_I import (
     retrieve_context,
     general_answer,
     rusty_answer,
-    summarization_node
 )
 
 from saby_node import patent_fetch
-from orchestrator.tools import routing_function
+from saby_tools import routing_function
 
 
 def build_graph():
@@ -24,7 +22,6 @@ def build_graph():
     workflow.add_node("patent_fetch", patent_fetch)
     workflow.add_node("general_answer", general_answer)
     workflow.add_node("rusty_answer", rusty_answer)
-    workflow.add_node("summarize", summarization_node)
 
     workflow.add_edge(START, "query_clean")
     workflow.add_edge("query_clean", "query_route")
@@ -41,10 +38,8 @@ def build_graph():
     workflow.add_edge("retrieve", "patent_fetch")
     workflow.add_edge("patent_fetch", "rusty_answer")
 
-    # Both answer paths append to memory then END
-    workflow.add_edge("rusty_answer", "summarize")
-    workflow.add_edge("general_answer", "summarize")
-    workflow.add_edge("summarize", END)
+    workflow.add_edge("rusty_answer", END)
+    workflow.add_edge("general_answer", END)
 
     return workflow
 
@@ -52,8 +47,7 @@ def build_graph():
 def compile_graph(print_mermaid: bool = False):
     builder = build_graph()
 
-    checkpointer = InMemorySaver()
-    compiled_graph = builder.compile(checkpointer=checkpointer)
+    compiled_graph = builder.compile()
 
     if print_mermaid:
         print(compiled_graph.get_graph().draw_mermaid())

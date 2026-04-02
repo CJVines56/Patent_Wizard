@@ -47,8 +47,9 @@ class RPMLimiterCallback(BaseCallbackHandler):
         self._sleep_if_needed()
 
 
+
 def run_one_with_graph(app, question: str, app_rpm_budget: int = 60) -> dict:
-    # Graph-level throttle (graph may trigger multiple provider calls internally)
+    # Graph-level throttle (graph triggers multiple calls internally)
     time.sleep(60.0 / max(app_rpm_budget, 1))
 
     try:
@@ -57,37 +58,26 @@ def run_one_with_graph(app, question: str, app_rpm_budget: int = 60) -> dict:
             inputs={"question": question},
             project_name=os.getenv("LANGSMITH_PROJECT", "default"),
         ):
-            final_state = app.invoke({"messages": [{"role": "user", "content": question}]})
+            
+            final_state = app.invoke(
+                {"messages": [{"role": "user", "content": question}]}
+            )
 
-            answer = final_state.get("answer", "")
-            if isinstance(answer, list):
-                answer = "\n".join(str(x) for x in answer)
-            elif not isinstance(answer, str):
-                answer = str(answer)
-
-            cleaned_q = final_state.get("cleaned_query", question)
-
-            raw_contexts: List[Dict[str, Any]] = final_state.get("contexts") or []
-            contexts: List[str] = [
+            answer = final_state["answer"]
+            q = final_state["question"]
+            raw_patents: List[Dict[str, Any]] = final_state["retrieved_patents"] or []
+            #print(raw_patents)
+            patents: List[str] = [
                 c.get("text", "")
-                for c in raw_contexts
+                for c in raw_patents
                 if isinstance(c, dict) and c.get("text")
             ]
 
-        return {
-            "user_input": cleaned_q,
-            "response": answer,
-            "retrieved_contexts": contexts,
-        }
+            return {"user_input": q, "response": answer, "retrieved_contexts": patents}
 
     except Exception as e:
         print(f"Error running graph for question '{question}': {e}")
-        # keep the same schema as success
-        return {
-            "user_input": question,
-            "response": "",
-            "retrieved_contexts": [],
-        }
+        return {"response": ""}
 
 
 def load_questions(csv_path: str, question_col: str) -> list[str]:
@@ -102,7 +92,7 @@ def load_questions(csv_path: str, question_col: str) -> list[str]:
 
 
 if __name__ == "__main__":
-    CSV_PATH = "./validation/test_validation.txt"
+    CSV_PATH = "./validation/regular_validation.txt"
     QUESTION_COL = "Question"
 
     results = None
@@ -110,7 +100,7 @@ if __name__ == "__main__":
     ragas_limiter = RPMLimiterCallback(rpm=90)
     try:
         ragas_llm = ChatOpenAI(
-            model="protected.gemini-2.5-flash",
+            model="protected.gpt-5",
             temperature=0.2,
             callbacks=[ragas_limiter],
             n=3,

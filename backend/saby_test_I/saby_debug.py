@@ -14,21 +14,19 @@ from langsmith.run_helpers import trace
 
 load_dotenv()
 
-def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int = 60) -> dict:
+def run_one_with_graph(app, question: str, app_rpm_budget: int = 60) -> dict:
     # Graph-level throttle (graph triggers multiple calls internally)
     time.sleep(60.0 / max(app_rpm_budget, 1))
 
     try:
         with trace(
             name="langgraph_app_invoke",
-            inputs={"question": question, "thread_id": thread_id},
+            inputs={"question": question},
             project_name=os.getenv("LANGSMITH_PROJECT", "default"),
         ):
-            config = {"configurable": {"thread_id": thread_id}}
             
             final_state = app.invoke(
-                {"messages": [{"role": "user", "content": question}]},
-                config=config,
+                {"messages": [{"role": "user", "content": question}]}
             )
 
             answer = final_state["answer"]
@@ -45,7 +43,7 @@ def run_one_with_graph(app, question: str, thread_id: str, app_rpm_budget: int =
 
 
 def main():
-    app = compile_graph(print_mermaid=True)
+    app = compile_graph(print_mermaid=False)
 
     # For dev CLI: a single fixed session (thread) for the whole run
     thread_id = "dev-session-1"
@@ -61,8 +59,8 @@ def main():
     # print("\nAnswer:\n", result["response"])
 
     # Test 3
-    question = "How are you?"
-    result = run_one_with_graph(app, question, thread_id=thread_id, app_rpm_budget=60)
+    question = "Is there any patent on chromatographic reader devices for biodetection?"
+    result = run_one_with_graph(app, question, app_rpm_budget=60)
     print("\nAnswer:\n", result["response"])
 
     # # Test 4

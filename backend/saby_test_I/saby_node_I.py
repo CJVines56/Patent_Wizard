@@ -1,13 +1,14 @@
+import sys
+import os
 import json
 from typing import Any, Dict, Optional, List
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from saby_classes import retrievalstate, Patent_Miner_State
 
-from patent_miner_classes import retrievalstate, Patent_Miner_State
-from vector_store import vector_storage
-from langmem.short_term import SummarizationNode
-from langchain_core.messages.utils import count_tokens_approximately
+from saby_vector_store import vector_storage
+
 
 load_dotenv()
 
@@ -44,9 +45,9 @@ def query_clean(state: Patent_Miner_State):
     cleaned_query = nodes_model.invoke([{"role": "user", "content": prompt}]).content.strip()
 
     # Replace only the last message content (keep history)
-    #messages[-1] = {"role": "user", "content": cleaned_query}
     state["messages"][-1].content = cleaned_query
-    return None
+
+    return {"question": cleaned_query}
 
 
 def query_route(state: Patent_Miner_State) -> retrievalstate:
@@ -89,7 +90,7 @@ def retrieve_context(state: Patent_Miner_State, where_filter: Optional[Dict[str,
     # Config
     target_k = 5 # final number of unique patents to return (matches prior behavior)
     unique_key = "doc_id" # patent-level uniqueness key (present in vector store metadata)
-    burst_k = 8 # how many candidates to fetch per round
+    burst_k = 10 # how many candidates to fetch per round
     max_rounds = 6 # max number of bursts
 
     seen = set()
@@ -128,7 +129,7 @@ def retrieve_context(state: Patent_Miner_State, where_filter: Optional[Dict[str,
         if not docs:
             break
 
-        # Keep the first (most similar) chunk per unseen patent  -- chunks are returned in ranked order (first chunk - most similar to question --- confirm?)
+        # Keep the first (most similar) chunk per unseen patent
         for d in docs:
             meta = dict(d.metadata) if d.metadata else {}
             uid = meta.get(unique_key) or meta.get("index")
@@ -139,81 +140,48 @@ def retrieve_context(state: Patent_Miner_State, where_filter: Optional[Dict[str,
             if len(selected_docs) >= target_k:
                 break
 
-    # # Best-effort fallback: if not enough unique patents found, top up without filters  -- ### Consider Removing - kosi 3/19 ###
-    # if len(selected_docs) < target_k:
-    #     remaining = target_k - len(selected_docs)
-    # try:
-    #     docs = vector_storage.similarity_search(question, k=target_k * 2)
-    # except TypeError:
-    #     docs = vector_storage.similarity_search(question, k=target_k * 2)
-    # for d in docs:
-    #     meta = dict(d.metadata) if d.metadata else {}
-    #     uid = meta.get(unique_key) or meta.get("index")
-    #     if not uid or uid in seen:
-    #         continue
-    #     seen.add(uid)
-    #     selected_docs.append(d)
-    #     if len(selected_docs) >= target_k:
-    #         break
 
     chunks: List[Dict[str, Any]] = [
     {"text": d.page_content, "metadata": dict(d.metadata) if d.metadata else {}}
     for d in selected_docs
     ]
-    joined_context = "\n\n".join([c["text"] for c in chunks])
+    #joined_context = "\n\n".join([c["text"] for c in chunks])
 
-    return {"joined_context": joined_context, "retrieved_context": chunks}
+    return {"retrieved_context": chunks}
 
 
 rusty_prompt = (
     "You are a patent search and retrieval assistant.\n"
-    "Given the question, retrieved context and summary of conversation below:\n\n"
+    "Given the question, and retrieved patents below:\n\n"
     "Question: {question}\n\n"
-    "Retrieved context:\n{context}\n\n"
-    "Conversation summary: \n{summary}\n\n"
+    "Retrieved patents:\nPatent 1\n\n{patents}\n\n"
     "Use three sentences maximum to respond to the user. If the context is not relevant, say so.\n"
 )
 
 def rusty_answer(state: Patent_Miner_State):
     question = state["messages"][-1].content
-    context = state.get("joined_context") or ""
-    summary=state.get("context")
+    patents = state.get("joined_patents") or ""
 
-    prompt = rusty_prompt.format(question=question, context=context, summary=summary)
+    ## Refine context to full patent ##
 
-    response_text = nodes_model.invoke([{"role": "user", "content": prompt}]).content
-
-    return {"messages": [{"role": "assistant", "content": response_text}], "answer": response_text}
-
-
-general_prompt = (
-    "You are a helpful assistant. Given the question and summary of conversation below:\n\n"
-    "Question: {question}\n\n"
-    "Conversation summary: \n{summary}\n\n"
-    "Answer concisely in <= 3 sentences. If you don't know, say you don't know.\n"
-)
-
-def general_answer(state: Patent_Miner_State):
-    question = state["messages"][-1].content
-    summary=state.get("context")
-
-    prompt = general_prompt.format(question=question, summary=summary)
-
-    # history = _history_with_summary(state)
+    prompt = rusty_prompt.format(question=question, patents=patents)
 
     ## Rewrite invoke method -- 3/17
     response_text = nodes_model.invoke([{"role": "user", "content": prompt}]).content
 
     return {"messages": [{"role": "assistant", "content": response_text}], "answer": response_text}
 
-## Message summarization ##
 
-
-summarization_node = SummarizationNode(
-    token_counter=count_tokens_approximately,
-    model=nodes_model,
-    max_tokens=256,
-    max_tokens_before_summary=20,
-    max_summary_tokens=128,
-    output_messages_key="messages"
+general_prompt = (
+    "You are a helpful assistant. Given the question below:\n\n"
+    "Question: {question}\n\n"
+    "Answer concisely in <= 3 sentences. If you don't know, say you don't know.\n"
 )
+
+def general_answer(state: Patent_Miner_State):
+    question = state["messages"][-1].content
+    prompt = general_prompt.format(question=question)
+
+    response_text = nodes_model.invoke([{"role": "user", "content": prompt}]).content
+
+    return {"messages": [{"role": "assistant", "content": response_text}], "answer": response_text}

@@ -1,8 +1,8 @@
 from typing import Any, Dict, Optional, List
 import os
 import glob
-from orchestrator import vector_store
-from orchestrator.patent_miner_classes import Patent_Miner_State
+import saby_vector_store as vector_store
+from saby_classes import Patent_Miner_State
 
 def build_docid_to_path_map(base_dir: str) -> Dict[str, str]:
     """
@@ -41,7 +41,6 @@ def patent_fetch(state: Patent_Miner_State, base_dir: Optional[str] = None):
     docid_to_path = build_docid_to_path_map(base_dir)
 
     full_texts: Dict[str, str] = {}
-    #paths: Dict[str, str] = {}
 
     for item in retrieved:
         meta = item.get("metadata", {}) or {}
@@ -57,32 +56,20 @@ def patent_fetch(state: Patent_Miner_State, base_dir: Optional[str] = None):
             path = candidates[0] if candidates else None
         if not path or not os.path.exists(path):
             continue
-
-        try:
-            ext = os.path.splitext(path).lower()
-            if ext in (".md", ".txt", ".html"):
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read()
-        #     elif ext == ".pdf":
-        # # Optional PDF support; requires pdfplumber
-        # try:
-        # import pdfplumber
-        # with pdfplumber.open(path) as pdf:
-        # content = "\n".join((page.extract_text() or "") for page in pdf.pages)
-        # except Exception:
-        # content = ""
-        # else:
-        # # Best-effort text load
-        # with open(path, "rb") as f:
-        # content = f.read().decode("utf-8", errors="ignore")
-        except Exception:
-            content = ""
+        
+        ext = os.path.splitext(path)[-1]
+        #try:
+        if ext in (".md", ".txt", ".html"):
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
 
         if content:
             full_texts[doc_id] = content
 
-    joined_patents = "\n\nNext Patent\n\n".join([c.get(content) for c in full_texts])
+    retrieved_patents: List[Dict[str, Any]] = [{"text": full_texts[c]} for c in full_texts]
+
+    joined_patents = "\n\nNext Patent\n\n".join([full_texts[c] for c in full_texts])
     del full_texts
     
     # Attach to state; you can decide how rusty_answer uses these (e.g., include links or run a secondary selector)
-    return {"joined_patents": joined_patents}
+    return {"joined_patents": joined_patents, "retrieved_patents": retrieved_patents}

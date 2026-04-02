@@ -14,7 +14,7 @@ from ragas.metrics import faithfulness, answer_relevancy
 from langchain_openai import ChatOpenAI
 from langchain_core.callbacks.base import BaseCallbackHandler
 
-from orchestrator.graph import compile_graph
+from kosi_graph import compile_graph
 from langchain_huggingface import HuggingFaceEmbeddings
 from langsmith.run_helpers import trace
 
@@ -48,7 +48,7 @@ class RPMLimiterCallback(BaseCallbackHandler):
 
 
 def run_one_with_graph(app, question: str, app_rpm_budget: int = 60) -> dict:
-    # Graph-level throttle (graph may trigger multiple provider calls internally)
+    # Graph-level throttle (graph triggers multiple calls internally)
     time.sleep(60.0 / max(app_rpm_budget, 1))
 
     try:
@@ -57,17 +57,14 @@ def run_one_with_graph(app, question: str, app_rpm_budget: int = 60) -> dict:
             inputs={"question": question},
             project_name=os.getenv("LANGSMITH_PROJECT", "default"),
         ):
-            final_state = app.invoke({"messages": [{"role": "user", "content": question}]})
-
-            answer = final_state.get("answer", "")
-            if isinstance(answer, list):
-                answer = "\n".join(str(x) for x in answer)
-            elif not isinstance(answer, str):
-                answer = str(answer)
-
-            cleaned_q = final_state.get("cleaned_query", question)
-
-            raw_contexts: List[Dict[str, Any]] = final_state.get("contexts") or []
+            
+            final_state = app.invoke(
+                {"messages": [{"role": "user", "content": question}]},
+            )    
+            
+            answer = final_state["answer"]
+            q = final_state["question"]
+            raw_contexts: List[Dict[str, Any]] = final_state["retrieved_context"] or []
             contexts: List[str] = [
                 c.get("text", "")
                 for c in raw_contexts
@@ -75,7 +72,7 @@ def run_one_with_graph(app, question: str, app_rpm_budget: int = 60) -> dict:
             ]
 
         return {
-            "user_input": cleaned_q,
+            "user_input": q,
             "response": answer,
             "retrieved_contexts": contexts,
         }
@@ -110,7 +107,7 @@ if __name__ == "__main__":
     ragas_limiter = RPMLimiterCallback(rpm=90)
     try:
         ragas_llm = ChatOpenAI(
-            model="protected.gemini-2.5-flash",
+            model="protected.gpt-5",
             temperature=0.2,
             callbacks=[ragas_limiter],
             n=3,
