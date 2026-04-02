@@ -1,35 +1,64 @@
 // src/pages/Home.jsx
 // Landing page with hero and centered search bar.
 // On submit, it performs client-side navigation to /search?q=...
-import robot from "./assets/robot.png";
 import { useState } from "react";
+import robot from "./assets/robot.png";
 import SearchBar from "./components/SearchBar.jsx";
+import DevTuningPanel from "./components/DevTuningPanel.jsx";
+import {
+  DEFAULT_TUNING,
+  DEV_TUNING_VISIBLE,
+  loadStoredTuning,
+  normalizeTuning,
+  saveStoredTuning,
+} from "./lib/devTuning.js";
 
 export default function Home() {
-  const [topK, setTopK] = useState(5);
+  const [draftTuning, setDraftTuning] = useState(() => loadStoredTuning());
+  const [activeTuning, setActiveTuning] = useState(() => loadStoredTuning());
 
   // Parent handler passed to SearchBar. It updates the browser history
   // so the in-file router (see src/main.jsx) renders the Results page.
   function handleSearch(query) {
     // Build new URL with query param
-    const url =
-      "/search?" + new URLSearchParams({ q: query, k: String(topK) }).toString();
+    const url = "/search?" + new URLSearchParams({ q: query }).toString();
     // Push a new history entry without full page reload
     window.history.pushState({}, "", url);
     // Notify our simple router to re-evaluate location
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 
-  function handleTopKAdjust() {
-    const raw = window.prompt("Set Top-K (1-100):", String(topK));
-    if (raw == null) return;
-    const next = Number(raw);
-    if (!Number.isInteger(next) || next < 1 || next > 100) return;
-    setTopK(next);
+  function handleTuningChange(field, value) {
+    setDraftTuning((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function applyTuning() {
+    const normalized = normalizeTuning(draftTuning);
+    saveStoredTuning(normalized);
+    setDraftTuning(normalized);
+    setActiveTuning(normalized);
+  }
+
+  function resetTuning() {
+    saveStoredTuning(DEFAULT_TUNING);
+    setDraftTuning(DEFAULT_TUNING);
+    setActiveTuning(DEFAULT_TUNING);
   }
 
   return (
     <div className="min-h-dvh bg-gradient-to-r from-[#500000] via-orange-500 to-[#500000] flex flex-col items-center justify-center text-white px-6 py-10">
+      {DEV_TUNING_VISIBLE && (
+        <DevTuningPanel
+          draftTuning={draftTuning}
+          activeTuning={activeTuning}
+          onTuningChange={handleTuningChange}
+          onApply={applyTuning}
+          onReset={resetTuning}
+          subtitle="Saved locally, used on the Results page"
+          note="Tip: open /search?q=demo to inspect results layout even without API."
+        />
+      )}
+
       {/* Hero image */}
       <img
         src={robot}
@@ -46,11 +75,7 @@ export default function Home() {
 
       {/* Centered search bar */}
       <div className="w-full flex justify-center px-2">
-        <SearchBar
-          onSearch={handleSearch}
-          topK={topK}
-          onTopKAdjust={handleTopKAdjust}
-        />
+        <SearchBar onSearch={handleSearch} />
       </div>
     </div>
   );
