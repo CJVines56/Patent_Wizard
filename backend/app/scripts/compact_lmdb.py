@@ -13,42 +13,19 @@ from pathlib import Path
 import lmdb
 
 from backend.app.store import (
-    LMDB_SHARD_ROOT_768_F16,
     LMDB_PATH_128_F16,
     LMDB_PATH_128_F32,
-    LMDB_PATH_768_F16,
-    LMDB_PATH_768_F32,
-    LMDB_PATH_768_I8,
+    LMDB_PATH_CLAIM_PAYLOAD,
+    LMDB_PATH_PATENT_METADATA,
 )
 
 
 SHARDS = {
-    "768_f32": LMDB_PATH_768_F32,
-    "768_f16": LMDB_PATH_768_F16,
-    "768_i8": LMDB_PATH_768_I8,
     "128_f32": LMDB_PATH_128_F32,
     "128_f16": LMDB_PATH_128_F16,
+    "claim_payloads": LMDB_PATH_CLAIM_PAYLOAD,
+    "patent_metadata": LMDB_PATH_PATENT_METADATA,
 }
-UTIL_LMDB_FILENAME = "colbert_768_f16.lmdb"
-
-
-def _util_shard_path(util_name: str) -> Path:
-    return Path(LMDB_SHARD_ROOT_768_F16) / util_name.upper() / UTIL_LMDB_FILENAME
-
-
-def _iter_util_shards() -> list[tuple[str, Path]]:
-    root = Path(LMDB_SHARD_ROOT_768_F16)
-    if not root.exists():
-        return []
-    out: list[tuple[str, Path]] = []
-    for child in sorted(root.iterdir()):
-        if not child.is_dir():
-            continue
-        if not child.name.upper().startswith("UTIL"):
-            continue
-        lmdb_path = child / UTIL_LMDB_FILENAME
-        out.append((child.name.upper(), lmdb_path))
-    return out
 
 
 def _open_env(path: Path) -> lmdb.Environment:
@@ -120,34 +97,7 @@ def main():
     parser = argparse.ArgumentParser(description="Compact LMDB shards in place.")
     parser.add_argument("--shard", type=str, default=None, choices=sorted(SHARDS.keys()))
     parser.add_argument("--all", action="store_true", help="Compact all shards.")
-    parser.add_argument(
-        "--util-shard",
-        type=str,
-        default=None,
-        help="Compact one util shard (e.g., UTIL12401).",
-    )
-    parser.add_argument(
-        "--util-all",
-        action="store_true",
-        help="Compact all util LMDB shards under LMDB_SHARD_ROOT_768_F16.",
-    )
     args = parser.parse_args()
-
-    if args.util_shard:
-        util_name = str(args.util_shard).upper()
-        print(f"\n== {util_name} ==")
-        compact_in_place(_util_shard_path(util_name))
-        return
-
-    if args.util_all:
-        util_shards = _iter_util_shards()
-        if not util_shards:
-            print(f"[skip] no util shards found under {Path(LMDB_SHARD_ROOT_768_F16)}")
-            return
-        for util_name, path in util_shards:
-            print(f"\n== {util_name} ==")
-            compact_in_place(path)
-        return
 
     if args.shard:
         print(f"\n== {args.shard} ==")

@@ -20,6 +20,8 @@ async def search(
     k: int = Query(5, ge=1, le=50, description="Top-k results to return"), # cited items count
     k_extra: int = Query(5, ge=0, le=100, description="Additional non-cited results to include"),
     rag: bool = Query(True, description="If true, synthesize a fake RAG answer"), # default to RAG mode
+    retrieval_mode: str | None = Query(None, description="Weaviate retrieval mode: vector | bm25 | hybrid"),
+    hybrid_alpha: float | None = Query(None, ge=0.0, le=1.0, description="Hybrid alpha (0=bm25, 1=vector)"),
 ):
     def _map_contexts_to_items(contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         mapped: List[Dict[str, Any]] = []
@@ -49,16 +51,34 @@ async def search(
     mapped_items: List[Dict[str, Any]] = []
     graph = getattr(request.app.state, "graph", None)
 
+    def _retrieve_payload(query_text: str) -> Dict[str, Any]:
+        payload_args: Dict[str, Any] = {"query": query_text}
+        if retrieval_mode:
+            payload_args["retrieval_mode"] = retrieval_mode
+        if hybrid_alpha is not None:
+            payload_args["hybrid_alpha"] = hybrid_alpha
+        return retrieve_context.invoke(payload_args)
+
     if rag and graph is not None:
-        final_state = graph.invoke({"messages": [{"role": "user", "content": q}]})
+        # Prefer graph-backed RAG, but keep retrieval resilient if the graph
+        # decides not to call tools or returns empty contexts.
+        try:
+            final_state = graph.invoke({"messages": [{"role": "user", "content": q}]})
+        except Exception:
+            final_state = {}
+
         mapped_items = _map_contexts_to_items(final_state.get("contexts") or [])
         answer = final_state.get("answer", "")
         if isinstance(answer, list):
             answer = "\n".join(str(x) for x in answer)
         elif not isinstance(answer, str):
             answer = str(answer)
+
+        if not mapped_items:
+            payload = _retrieve_payload(q)
+            mapped_items = _map_contexts_to_items(payload.get("chunks") or [])
     elif not rag:
-        payload = retrieve_context.invoke({"query": q})
+        payload = _retrieve_payload(q)
         mapped_items = _map_contexts_to_items(payload.get("chunks") or [])
     else:
         # Fallback path if graph is unavailable.

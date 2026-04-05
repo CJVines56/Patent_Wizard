@@ -20,8 +20,8 @@ from embed import (
     save_embeddings_to_file,
     load_embeddings_into_weaviate,
 )
-from store import store_embeddings
-from services.download import bulk_dataset_download, output_file as DOWNLOAD_DIR
+from store import _to_jsonable, prepare_embedding_record_for_storage, store_embeddings
+from services.download import _dataset_file_base, bulk_dataset_download, output_file as DOWNLOAD_DIR
 
 EXPORT_PATH = Path(os.environ.get("EMBED_EXPORT_PATH", DOWNLOAD_DIR / "chunks_with_vectors.jsonl.gz"))
 STATS_EVERY_BATCHES = int(os.environ.get("STATS_EVERY_BATCHES", "5"))
@@ -225,6 +225,7 @@ def real_ingest(
     stats = _IngestStats()
     start_time = time.perf_counter()
     current_dataset_shards: set[str] = set()
+    current_dataset_id: str | None = None
     completed_dates = (
         _load_completed_ingest_dates(ingest_checkpoint_path)
         if ingest_checkpoint_path
@@ -282,7 +283,11 @@ def real_ingest(
             print(f"[store] Uploaded {len(embedded)} chunk(s) to Weaviate.")
         if export_handle:
             for rec in embedded:
-                export_handle.write(json.dumps(rec, ensure_ascii=False))
+                prepared = prepare_embedding_record_for_storage(
+                    rec,
+                    canonical_dataset_id=current_dataset_id,
+                )
+                export_handle.write(json.dumps(_to_jsonable(prepared), ensure_ascii=False))
                 export_handle.write("\n")
 
     try:
@@ -292,6 +297,7 @@ def real_ingest(
                 if ingest_date in completed_dates:
                     print(f"[checkpoint] Skipping completed date {ingest_date}")
                     continue
+                current_dataset_id = _dataset_file_base(ingest_date, DOWNLOAD_DIR, "PTGRDT")[0].name
                 print(f"[ingest] Starting dataset for {ingest_date}")
                 current_dataset_shards.clear()
                 bulk_dataset_download(
@@ -315,6 +321,7 @@ def real_ingest(
                 if ingest_date in completed_dates:
                     print(f"[checkpoint] Skipping completed date {ingest_date}")
                     continue
+                current_dataset_id = _dataset_file_base(ingest_date, DOWNLOAD_DIR, "PTGRDT")[0].name
                 print(f"[ingest] Starting dataset for {ingest_date}")
                 current_dataset_shards.clear()
                 chunks = bulk_dataset_download(

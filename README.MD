@@ -1,414 +1,191 @@
--------------API---------------
-## Fast startup (Docker + API)
-Use this exact flow when you come back to the project.
+# Patent Wizard Backend: Strict 128-d ColBERT Pipeline
 
-1) Start Weaviate with Docker Compose
+This backend is now hard-locked to:
+- `TOKEN_VECTOR_DIM=128`
+- `PROJECTION_MODE=trained`
+- trained projection weights loaded from `PROJECTION_PATH`
+
+There is no 768 fallback path and no random projection path.
+
+## Required Environment Configuration
+
+Set these before running ingest/retrieval:
+
 ```powershell
-cd C:\Users\Optim\Patent_Wizard\backend\app
-docker compose up -d
+$env:TOKEN_VECTOR_DIM="128"
+$env:PROJECTION_MODE="trained"
+$env:PROJECTION_PATH="C:\path\to\trained_projection.pt"   # required
+$env:TOKEN_VECTOR_DTYPE="float16"                         # float16 or float32
+$env:COLBERT_VARIANTS="128_f16,128_f32"
+$env:LMDB_WRITE_VARIANTS="128_f16"
+$env:WEAVIATE_NAMED_VECTOR="colbert"
 ```
 
-2) Start the FastAPI server (new terminal)
+Validation happens at import/startup:
+- projection file must exist
+- projection matrix shape must be `[128,768]` or `[768,128]` (transposed explicitly)
+- dtype must be float16 or float32
+- any non-128 variant request raises immediately
+
+## Ingest Logging
+
+At embedding init/start, logs include:
+- model checkpoint
+- projection path
+- projection shape
+- final token dim (128)
+- token dtype
+
+## Weaviate Vector Export For Reranking
+
+Rerank source options:
+- `lmdb` (default)
+- `weaviate`
+
+New function:
+- `fetch_colbert_vectors_from_weaviate(object_ids: list[str]) -> dict[str, np.ndarray]`
+
+Exact API call used:
+- Endpoint: `GET /v1/objects/Claim/{uuid}?include=vector`
+- Base URL: `WEAVIATE_OBJECTS` (default `http://localhost:8080/v1/objects`)
+- Expected response field: `vectors["colbert"]` (or configured `WEAVIATE_NAMED_VECTOR`)
+
+Any missing vector / wrong named vector / empty vector / non-128 last dimension causes a hard error.
+
+## Retrieval + Rerank Commands
+
+### Vector retrieval + LMDB rerank
+
 ```powershell
-:: Required for /api/qrels-eval
-$env:QRELS_API_KEY="WWg5_F3HfC0CXYUu8fVezCLn-eSSBO76ZIUefuh2rXg"
-cd C:\Users\Optim\Patent_Wizard
-poetry run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+poetry run python backend/app/scripts/retrieve_rerank.py `
+  --query "battery separator polymer" `
+  --retrieve-shard 128_f16 `
+  --rerank-shard 128_f16 `
+  --retrieval-mode vector `
+  --limit 400 `
+  --rerank-k 200 `
+  --rerank-source lmdb
 ```
 
-3) Verify everything is live
+### Vector retrieval + Weaviate-vector rerank
+
 ```powershell
-curl http://localhost:8080/v1/.well-known/ready
-curl http://localhost:8000/healthz
+poetry run python backend/app/scripts/retrieve_rerank.py `
+  --query "battery separator polymer" `
+  --retrieve-shard 128_f16 `
+  --rerank-shard 128_f16 `
+  --retrieval-mode vector `
+  --limit 400 `
+  --rerank-k 200 `
+  --rerank-source weaviate
 ```
 
-4) Stop services
+### Qrels eval with Weaviate rerank source + vector debug compare
+
 ```powershell
-cd C:\Users\Optim\Patent_Wizard\backend\app
-docker compose down
+poetry run python backend/app/scripts/retrieve_rerank.py `
+  --queries backend/validation/queries.jsonl `
+  --qrels backend/validation/qrels.jsonl `
+  --retrieve-shard 128_f16 `
+  --rerank-shard 128_f16 `
+  --retrieval-mode vector `
+  --limit 400 `
+  --rerank-k 200 `
+  --rerank-source weaviate `
+  --debug-compare-vectors `
+  --debug-compare-n 10 `
+  --debug-compare-max-abs-tol 0.05 `
+  --metrics-csv backend/validation/metrics_l400_r200.csv `
+  --per-query-csv backend/validation/per_query_diagnostics_l400_r200.csv `
+  --per-query-top10-csv backend/validation/per_query_top10_l400_r200.csv
 ```
 
-Notes:
-- `docker compose` here starts **Weaviate** (vector DB), not the Python API process.
-- If `uvicorn` is not found, always run it via `poetry run ...`.
-- Weaviate data is persisted in a named Docker volume (`weaviate_data`). After the one-time re‑ingest, your data survives restarts.
+## Smoke Test (Embed -> Insert -> Fetch vectors -> Rerank)
 
-## Quick tests
-🚀 How to Start the API (Development)
-
-1. Open a terminal and go to the project folder
-
-cd C:\Patent_Wizard
-
-
-2. Activate the virtual environment
-
-poetry shell
-
-
-3. Start the API server
-
-uvicorn backend.app.main:app --reload
-
-
-4. Open in browser
-
-API Docs: http://127.0.0.1:8000/docs
-
-Health Check: http://127.0.0.1:8000/healthz
-
-## Qrels evaluation API (TailScale)
-This endpoint lets a teammate upload qrels/queries and run the rerank eval remotely.
-
-Server setup (on your machine):
 ```powershell
-$env:QRELS_API_KEY="WWg5_F3HfC0CXYUu8fVezCLn-eSSBO76ZIUefuh2rXg"
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+poetry run python backend/app/scripts/smoke_weaviate_colbert_rerank.py --limit 50
 ```
 
-Your TailScale IP:
-```
-100.103.151.117
-```
+This script verifies:
+1. sample text embeds to token vectors with dim 128
+2. sample claims are inserted into Weaviate
+3. vectors are fetched back from Weaviate and reranking succeeds
 
-Endpoint:
-```
-POST http://100.103.151.117:8000/api/qrels-eval
-Header: X-API-Key: (the API key above)
-```
+## Ingest Runner (PowerShell)
 
-Request (PowerShell on your friend's machine):
+`backend/app/scripts/run_ingest_pipeline.ps1` now enforces strict trained 128 config.
+
+Example:
+
 ```powershell
-$apiKey = "WWg5_F3HfC0CXYUu8fVezCLn-eSSBO76ZIUefuh2rXg"
-$uri = "http://100.103.151.117:8000/api/qrels-eval"
-
-Invoke-RestMethod -Uri $uri -Method Post -Headers @{ "X-API-Key" = $apiKey } `
-  -Form @{
-    qrels = Get-Item "C:\path\to\qrels.jsonl"
-    # queries = Get-Item "C:\path\to\queries.jsonl"  # optional, will be derived if omitted
-    shard = "768_f16"
-    limit = 200
-    rerank_k = 100
-    filter_missing_qrels = "true"
-  }
+$env:PROJECTION_PATH="C:\path\to\trained_projection.pt"
+.\backend\app\scripts\run_ingest_pipeline.ps1 -DropFirst -ResetWeaviate -KeepAwake
 ```
 
-Request (curl):
-```bash
-curl -X POST "http://100.103.151.117:8000/api/qrels-eval" \
-  -H "X-API-Key: WWg5_F3HfC0CXYUu8fVezCLn-eSSBO76ZIUefuh2rXg" \
-  -F "qrels=@/path/to/qrels.jsonl" \
-  -F "queries=@/path/to/queries.jsonl" \
-  -F "shard=768_f16" \
-  -F "limit=200" \
-  -F "rerank_k=100" \
-  -F "filter_missing_qrels=true"
-```
+## Master CLI Flag Reference
 
-Response includes:
-- `metrics` JSON (precision/recall/ndcg/mrr)
-- `metrics_csv` string (ready to save as a CSV file)
+### `backend/app/scripts/retrieve_rerank.py`
+- `--query`
+- `--limit`
+- `--rerank-k`
+- `--retrieval-mode` (`vector|bm25|hybrid`)
+- `--hybrid-alpha`
+- `--save-before-csv`
+- `--save-after-csv`
+- `--save-k`
+- `--retrieve-shard` (`128_f16|128_f32`)
+- `--rerank-shard` (`128_f16|128_f32`)
+- `--rerank-source` (`lmdb|weaviate`)
+- `--debug-compare-vectors` / `--no-debug-compare-vectors`
+- `--debug-compare-n`
+- `--debug-compare-max-abs-tol`
+- `--doc-id`
+- `--queries`
+- `--qrels`
+- `--metrics-csv`
+- `--per-query-csv`
+- `--per-query-top10-csv`
+- `--sweep-rerank-shards`
+- `--sweep-csv`
+- `--filter-missing-qrels` / `--no-filter-missing-qrels`
 
-### 1) Health check
-```bash
-curl "http://localhost:8000/healthz"
+### `backend/app/scripts/backfill_weaviate_vectors_from_lmdb.py`
+- `--shard` (`128_f16|128_f32`)
+- `--batch-size`
+- `--max-claims`
+- `--timeout-s`
+- `--progress-every`
+- `--start-after`
+- `--patch-workers`
+- `--dry-run`
+- `--strict`
+- `--report-csv`
 
-should output
+### `backend/app/scripts/compact_lmdb.py`
+- `--shard` (`128_f16|128_f32|claim_payloads|patent_metadata`)
+- `--all`
 
-{"status":"ok"}
+### `backend/app/scripts/smoke_weaviate_colbert_rerank.py`
+- `--limit`
 
-curl "http://localhost:8000/api/search?q=power&k=3"
+### `backend/app/scripts/convert_fig_images.py`
+- positional `path` (optional; defaults to sample JSONL path)
 
-should output below (pretty print enabled)
+### `backend/app/scripts/run_ingest_pipeline.ps1` parameters
+- `-StartDate`
+- `-WeeksBack`
+- `-ResetWeaviate`
+- `-DropFirst`
+- `-CleanOutputs`
+- `-KeepAwake`
+- `-ManifestPath`
+- `-CheckpointPath`
 
-{
-  "query": "power",
-  "total": 2,
-  "page": 1,
-  "page_size": 3,
-  "items": [
-    {
-      "id": 1,
-      "title": "Electric Power Systems",
-      "snippet": "Power flow, stability, protection."
-    },
-    {
-      "id": 6,
-      "title": "Power Electronics",
-      "snippet": "Converters, PWM, and switching devices."
-    }
-  ],
-  "mode": "basic",
-  "answer": null
-}
+## API Notes
 
-curl "http://localhost:8000/api/search?q=power&k=3&rag=true"
+`POST /api/qrels-eval` now supports:
+- `retrieve_shard` default `128_f16`
+- `rerank_shard` default `128_f16`
+- `rerank_source` (`lmdb` or `weaviate`)
+- existing retrieval params (`retrieval_mode`, `hybrid_alpha`, `limit`, `rerank_k`, `filter_missing_qrels`)
 
-{
-  "query": "power",
-  "total": 2,
-  "page": 1,
-  "page_size": 3,
-  "items": [
-    {
-      "id": 1,
-      "title": "Electric Power Systems",
-      "snippet": "Power flow, stability, protection."
-    },
-    {
-      "id": 6,
-      "title": "Power Electronics",
-      "snippet": "Converters, PWM, and switching devices."
-    }
-  ],
-  "mode": "rag",
-  "answer": "(FAKE RAG) Proposed answer for: 'power'\n\nBased on the following 2 contexts:\n- Electric Power Systems: Power flow, stability, protection.\n- Power Electronics: Converters, PWM, and switching devices.\n\n(Note: This is a fake synthesized answer string for POC; plug your real LangChain orchestrator here later.)"
-}
-
-
-
-module purge
-module load GCCcore/9.3.0 GCC/9.3.0 Python/3.8.2 CUDAcore/11.0.2 CUDA/11.0.2 cuDNN/8.0.5.39-CUDA-11.0.2
-
-## GPU setup (Windows + Poetry)
-PyTorch CUDA wheels are not available for Python 3.13+ yet. Use Python 3.12.
-
-1) Install Python 3.12
-- Download the Python 3.12.10 Windows installer from python.org.
-- In the installer, check "Add python.exe to PATH".
-- If Windows is intercepting `python`/`py`, disable App Execution Aliases for python.exe/python3.exe.
-
-2) Point Poetry at Python 3.12
-Replace the path with your install location:
-```powershell
-C:\Python312\python.exe -m poetry env use C:\Python312\python.exe
-```
-
-3) Recreate the Poetry env
-```powershell
-poetry env remove --all
-poetry install
-```
-
-4) Install CUDA-enabled torch using pip (not Poetry)
-Poetry cannot resolve CUDA wheels from the default index; install torch via pip inside the Poetry env:
-```powershell
-poetry run python -m pip install --upgrade pip
-poetry run python -m pip install --index-url https://download.pytorch.org/whl/cu124 torch
-```
-
-5) Verify CUDA is active
-```powershell
-poetry run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
-```
-Expected output example: `2.6.0+cu124 12.4 True`
-
-## Multi-vector ColBERT + MUVERA (Weaviate 1.31+)
-This project stores ColBERT token vectors as a multi-vector field and lets Weaviate apply MUVERA encoding at index time.
-We now use two collections:
-- `Patent` (metadata only)
-- `Claim` (claims + vectors)
-
-How it works
-- `backend/app/embed.py` writes per-token vectors to `colbert` and keeps a mean-pooled `embedding` for preview/debug.
-- `backend/app/store.py` configures a multi-vector named `colbert` with MUVERA encoding.
-- Weaviate indexes the multi-vector field and applies MUVERA internally.
-
-Important: recreate the collection after schema changes
-If `Patent` / `Claim` already exist, Weaviate will not update the vector config. Delete and recreate once.
-
-Steps
-1) In `backend/app/test_connection.py`, set `DROP_FIRST = True` and run the script once.
-2) Set `DROP_FIRST = False` and run the ingest again.
-
-Notes
-- Retrieval should use the `colbert` vector space on `Claim`.
-- There is no separate `muvera` vector stored; MUVERA is an index-time encoding over the multi-vector input.
-
-### Weaviate batching
-`store.py` uses Weaviate batch inserts to reduce round‑trips. You can tune batch size with:
-```powershell
-$env:WEAVIATE_BATCH_SIZE="128"
-```
-
-### LMDB ColBERT storage (4 variants + auto-grow)
-ColBERT token vectors are stored in LMDB for reranking. We write four variants in parallel:
-- 768_f32
-- 768_f16
-- 128_f32
-- 128_f16
-
-Recommended env vars:
-```powershell
-$env:LMDB_MAP_GROW_GB="10"
-$env:LMDB_MAP_SIZE="21474836480"
-$env:LMDB_PATH_768_F32="backend/lmdb/colbert_768_f32.lmdb"
-$env:LMDB_PATH_768_F16="backend/lmdb/colbert_768_f16.lmdb"
-$env:LMDB_PATH_128_F32="backend/lmdb/colbert_128_f32.lmdb"
-$env:LMDB_PATH_128_F16="backend/lmdb/colbert_128_f16.lmdb"
-```
-
-## Quick local workflow (Weaviate + ingest)
-If you only have a few hours a week, use this quick checklist:
-
-1) Start Weaviate from the repo’s compose file:
-```powershell
-cd backend\app
-docker compose up -d
-```
-
-2) Run the ingest:
-```powershell
-poetry run python backend/app/test_connection.py
-```
-
-Tip: If you change the vector schema, set `DROP_FIRST = True` once, run the script, then set it back to `False`.
-
-Troubleshooting Docker
-- If you see `dockerDesktopLinuxEngine` pipe errors, Docker Desktop isn’t running. Open Docker Desktop and wait for “Docker Engine running”.
-- Run `docker info` in a new terminal to confirm the engine is up before `docker compose up -d`.
-
-## Use cases
-- Search patents by claim text and retrieve the most semantically similar claims.
-- Rerank Weaviate results with ColBERT MaxSim for higher precision.
-- Compare reranked vs. raw retrieval results (export to CSV for side-by-side review).
-- Build evaluation runs from queries/qrels JSONL to track relevance metrics.
-- Export or share LMDB shards + Weaviate data for team collaboration and offline analysis.
-
-## Step-by-step: correct model + ingest + retrieval
-Use the same 768-dim ColBERT model for both ingest and query-time retrieval.
-
-1) Start Weaviate
-```powershell
-cd backend\app
-docker compose up -d
-```
-
-2) Force the same ColBERT model (important)
-```powershell
-$env:COLBERT_MODEL_NAME="colbert-ir/colbertv2.0"
-$env:MODEL_NAME=$env:COLBERT_MODEL_NAME
-```
-
-3) (Optional) disable LMDB shard creation
-```powershell
-$env:WRITE_LMDB="0"
-```
-
-4) Ingest to Weaviate
-```powershell
-cd C:\Users\Optim\Patent_Wizard
-poetry run python backend/app/test_connection.py
-```
-
-5) Run retrieval + rerank
-```powershell
-poetry run python backend/app/scripts/retrieve_rerank.py --query "transistor system" --shard 768_f16
-```
-
-6) Or use the GUI
-```powershell
-poetry run python backend/app/scripts/retrieve_rerank_gui.py
-```
-
-## Environment variables (INGEST_MODE)
-`backend/app/test_connection.py` reads `INGEST_MODE` from the environment. If it’s unset, it defaults to `real-store`.
-
-Set for current PowerShell session:
-```powershell
-$env:INGEST_MODE="real-store"   # or "export", "import", "fake"
-```
-
-Persist for your user:
-```powershell
-setx INGEST_MODE "real-store"
-```
-
-## Environment variables (embedding + storage)
-```powershell
-$env:TOKEN_VECTOR_DIM="768"          # primary variant for emb["colbert"] (768 or 128)
-$env:TOKEN_VECTOR_DTYPE="float16"    # primary dtype for emb["colbert"]
-$env:USE_TOKEN_PROJECTION="1"        # required when TOKEN_VECTOR_DIM=128
-$env:COLBERT_VARIANTS="768_f32,768_f16,768_i8,128_f32,128_f16"  # controls which LMDB shards are created
-$env:COLBERT_MODEL_NAME="colbert-ir/colbertv2.0"  # keep ingest/query dimensions aligned (768)
-$env:MODEL_NAME=$env:COLBERT_MODEL_NAME
-$env:WRITE_LMDB="1"                  # set to "0" to skip LMDB shard writes
-$env:WEAVIATE_BATCH_SIZE="128"
-$env:LMDB_MAP_GROW_GB="10"
-$env:LMDB_MAP_SIZE="21474836480"
-$env:LMDB_PATH_768_F32="backend/lmdb/colbert_768_f32.lmdb"
-$env:LMDB_PATH_768_F16="backend/lmdb/colbert_768_f16.lmdb"
-$env:LMDB_PATH_768_I8="backend/lmdb/colbert_768_i8.lmdb"
-$env:LMDB_PATH_128_F32="backend/lmdb/colbert_128_f32.lmdb"
-$env:LMDB_PATH_128_F16="backend/lmdb/colbert_128_f16.lmdb"
-```
-
-Storage impact notes (dtype + dimensionality)
-- float32 → float16: ~2× smaller (supported)
-- float32 → int8: ~4× smaller (supported as 768_i8)
-- 768 → 128 dims: ~6× smaller
-- 768_f32 → 128_f16: ~12× smaller overall
-- 768_f16 → 128_f16: ~6× smaller overall
-
-We create multiple ColBERT variants to compare size/quality tradeoffs. Anything beyond these (e.g., int8/4‑bit) would require additional quantization not implemented here.
-
-## Weaviate search (Claim collection)
-Example GraphQL nearVector search using the dense query vector:
-```powershell
-curl http://localhost:8080/v1/graphql -H "Content-Type: application/json" -d "{\n  \"query\": \"{ Get { Claim(nearVector: {vector: [0.1, 0.2, 0.3]}, limit: 5) { claim_id doc_id claim_type text } } }\"\n}"
-```
-Generate a query vector with:
-```python
-from backend.app.embed import embed_query, tokenizer, model
-qvec = embed_query("your query", tokenizer, model)[0].tolist()
-```
-PowerShell-friendly version:
-```powershell
-$body = @{ query = "{ Get { Claim(limit: 5) { claim_id doc_id claim_type text } } }" } | ConvertTo-Json
-$resp = Invoke-WebRequest -Uri "http://localhost:8080/v1/graphql" -Method Post -Headers @{ "Content-Type" = "application/json" } -Body $body -UseBasicParsing
-($resp.Content | ConvertFrom-Json).data.Get.Claim
-```
-
-## LMDB lookup + deserialization
-```python
-from backend.app.store import load_colbert_from_lmdb
-
-# claim_uuid is the Weaviate Claim object UUID
-vecs = load_colbert_from_lmdb("backend/lmdb/colbert_768_f16.lmdb", claim_uuid)
-print(vecs.shape, vecs.dtype)  # [tokens, dim]
-```
-
-## Compact LMDB (reclaim unused map size)
-LMDB does not shrink in place. Use the compact script to rewrite shards to their actual size:
-```powershell
-poetry run python backend/app/scripts/compact_lmdb.py --shard 768_f16
-```
-Or compact all shards:
-```powershell
-poetry run python backend/app/scripts/compact_lmdb.py --all
-```
-
-## Retrieval + reranking (with shard selection)
-Run a query:
-```powershell
-poetry run python backend/app/scripts/retrieve_rerank.py --query "battery separator polymer" --shard 768_f16
-```
-
-Lookup by patent ID (doc_id):
-```powershell
-poetry run python backend/app/scripts/retrieve_rerank.py --doc-id 12406488
-```
-
-Evaluate metrics (JSONL inputs):
-```powershell
-poetry run python backend/app/scripts/retrieve_rerank.py --queries backend/validation/queries.jsonl --qrels backend/validation/qrels.jsonl --shard 768_f16
-```
-Expected JSONL formats:
-```json
-{"query":"battery separator polymer"}
-{"query":"solid state electrolyte"}
-```
-```json
-{"query":"battery separator polymer","relevant_claim_ids":["12406488-CLM-1","12403066-CLM-20"]}
-{"query":"solid state electrolyte","relevant_claim_ids":["12403753-CLM-1"]}
-```

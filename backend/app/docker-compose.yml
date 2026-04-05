@@ -12,6 +12,9 @@ services:
       PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
       ENABLE_MODULES: text2vec-openai
       GRPC_PORT: 50051
+      LIMIT_RESOURCES: "true"
+      HNSW_VECTOR_CACHE_MAX_OBJECTS: 100000
+      CLUSTER_HOSTNAME: acf0d04ae54d
 
 volumes:
   weaviate_data:

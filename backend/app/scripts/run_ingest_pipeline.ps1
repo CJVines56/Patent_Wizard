@@ -42,7 +42,10 @@ function Disable-KeepAwake {
 
 try {
     if ($CleanOutputs) {
-        Remove-Item -Recurse -Force "backend\lmdb\colbert_768_f16_shards" -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force "backend\lmdb\colbert_128_f16.lmdb" -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force "backend\lmdb\colbert_128_f32.lmdb" -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force "backend\lmdb\patent_metadata.lmdb" -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force "backend\lmdb\claim_payloads.lmdb" -ErrorAction SilentlyContinue
         Remove-Item "backend\validation\master_patent_manifest.csv" -ErrorAction SilentlyContinue
         Remove-Item "backend\validation\ingest_completed_dates.txt" -ErrorAction SilentlyContinue
     }
@@ -68,13 +71,16 @@ try {
     $env:INGEST_START_DATE = $StartDate
     $env:INGEST_WEEKS_BACK = [string][Math]::Max(0, $WeeksBack)
 
-    $env:TOKEN_VECTOR_DIM = "768"
+    $env:TOKEN_VECTOR_DIM = "128"
     $env:TOKEN_VECTOR_DTYPE = "float16"
-    $env:COLBERT_VARIANTS = "768_f16"
-    $env:LMDB_WRITE_VARIANTS = "768_f16"
-    $env:LMDB_SHARDING_MODE = "util"
-    $env:USE_TOKEN_PROJECTION = "0"
-    $env:USE_COLBERT_CHECKPOINT = "0"
+    $env:PROJECTION_MODE = "trained"
+    # Must point to trained [128,768] (or [768,128]) projection checkpoint.
+    if (-not $env:PROJECTION_PATH) {
+        throw "PROJECTION_PATH must be set to trained projection weights before ingest."
+    }
+    $env:COLBERT_VARIANTS = "128_f16,128_f32"
+    $env:LMDB_WRITE_VARIANTS = "128_f16"
+    $env:LMDB_SHARDING_MODE = "none"
     $env:WRITE_LMDB = "1"
 
     $env:MASTER_MANIFEST_CSV = $ManifestPath
