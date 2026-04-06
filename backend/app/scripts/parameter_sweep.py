@@ -84,6 +84,10 @@ def _json_dump(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _json_load(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _load_saved_records_from_file(path: Path):
     opener = gzip.open if path.suffix == ".gz" else Path.open
     if opener is gzip.open:
@@ -96,6 +100,37 @@ def _load_saved_records_from_file(path: Path):
             if not line:
                 continue
             yield json.loads(line)
+
+
+def _upload_checkpoint_path(run_dir: Path) -> Path:
+    return run_dir / "upload_state.json"
+
+
+def _existing_eval_run_files(run_dir: Path) -> list[Path]:
+    runs_dir = run_dir / "eval_suite" / "runs"
+    if not runs_dir.exists():
+        return []
+    return sorted(p for p in runs_dir.glob("*.run") if p.is_file())
+
+
+def _build_upload_stats_from_dataset_manifests(dataset_manifests: list[dict[str, Any]]) -> dict[str, Any]:
+    dataset_uploads: list[dict[str, Any]] = []
+    total_uploaded = 0
+    for manifest in dataset_manifests:
+        uploaded = int(manifest.get("record_count") or 0)
+        total_uploaded += uploaded
+        dataset_uploads.append(
+            {
+                "canonical_dataset_id": str(manifest.get("canonical_dataset_id") or ""),
+                "uploaded_records": uploaded,
+                "storage_format": str(manifest.get("storage_format") or ""),
+                "storage_path": str(manifest.get("storage_path") or ""),
+            }
+        )
+    return {
+        "total_uploaded_records": total_uploaded,
+        "dataset_uploads": dataset_uploads,
+    }
 
 
 def _write_table(ws, start_row: int, headers: list[str], rows: list[dict[str, Any]]) -> int:
@@ -134,6 +169,15 @@ def _build_weekly_dates(start_date: str, num_datasets: int) -> list[str]:
     ]
 
 
+def _format_seconds(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
 def _resolve_dataset_ids(
     *,
     start_date: str,
@@ -152,23 +196,32 @@ def _resolve_dataset_ids(
     return dataset_ids
 
 
-def _load_dataset_manifests(embeddings_root: Path, dataset_ids: list[str]) -> list[dict[str, Any]]:
+def _load_dataset_manifests(embeddings_roots: list[Path], dataset_ids: list[str]) -> list[dict[str, Any]]:
     manifests: list[dict[str, Any]] = []
     for dataset_id in dataset_ids:
-        manifest_path = embeddings_root / dataset_id / "manifest.json"
-        if not manifest_path.exists():
-            raise FileNotFoundError(f"Missing dataset manifest: {manifest_path}")
+        manifest_path = None
+        selected_root = None
+        for embeddings_root in embeddings_roots:
+            candidate = embeddings_root / dataset_id / "manifest.json"
+            if candidate.exists():
+                manifest_path = candidate
+                selected_root = embeddings_root
+                break
+        if manifest_path is None or selected_root is None:
+            searched = ", ".join(str(root / dataset_id / "manifest.json") for root in embeddings_roots)
+            raise FileNotFoundError(f"Missing dataset manifest for {dataset_id}. Searched: {searched}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         storage_format = str(manifest.get("storage_format") or "jsonl.gz").strip().lower()
         if storage_format == "lmdb":
-            storage_path = Path(manifest.get("dataset_lmdb_path") or embeddings_root / dataset_id / "embeddings.lmdb")
+            storage_path = Path(manifest.get("dataset_lmdb_path") or selected_root / dataset_id / "embeddings.lmdb")
         else:
-            storage_path = Path(manifest.get("embeddings_path") or embeddings_root / dataset_id / "embeddings.jsonl.gz")
+            storage_path = Path(manifest.get("embeddings_path") or selected_root / dataset_id / "embeddings.jsonl.gz")
         if not storage_path.exists():
             raise FileNotFoundError(f"Missing dataset embeddings file: {storage_path}")
         manifest["storage_format"] = storage_format
         manifest["storage_path"] = str(storage_path.resolve())
         manifest["manifest_path"] = str(manifest_path.resolve())
+        manifest["embeddings_root"] = str(selected_root.resolve())
         manifests.append(manifest)
     return manifests
 
@@ -321,6 +374,7 @@ def run_eval_suite(
     balanced_k: int,
     recall_threshold: float,
     latency_cap_ms: float | None,
+    resume_existing_runs: bool = False,
 ) -> tuple[Path, list[dict[str, Any]], Path]:
     eval_output_dir = run_dir / "eval_suite"
     eval_output_dir.mkdir(parents=True, exist_ok=True)
@@ -370,8 +424,15 @@ def run_eval_suite(
         cmd.extend(["--diag-limit", str(int(diag_limit))])
     if latency_cap_ms is not None:
         cmd.extend(["--latency-cap-ms", str(float(latency_cap_ms))])
+    if resume_existing_runs:
+        cmd.append("--resume-existing-runs")
 
-    with log_path.open("w", encoding="utf-8", buffering=1) as log_handle:
+    log_mode = "a" if resume_existing_runs and log_path.exists() else "w"
+    with log_path.open(log_mode, encoding="utf-8", buffering=1) as log_handle:
+        if resume_existing_runs:
+            banner = f"[phase2] Resuming eval from existing run files in {eval_output_dir}\n"
+            print(banner, end="", flush=True)
+            log_handle.write(banner)
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -480,37 +541,114 @@ def run_single_configuration(
     dataset_range = _dataset_range(dataset_manifests)
 
     total_start = time.perf_counter()
-    reset_start = time.perf_counter()
-    deleted_collections = reset_weaviate_state(muvera_params=muvera_params, pq_params=pq_params)
-    reset_seconds = time.perf_counter() - reset_start
+    upload_checkpoint_path = _upload_checkpoint_path(run_dir)
+    upload_checkpoint = _json_load(upload_checkpoint_path) if upload_checkpoint_path.exists() else None
+    existing_eval_runs = _existing_eval_run_files(run_dir)
+    resume_eval_only = bool(upload_checkpoint or existing_eval_runs)
+    resume_reason = ""
 
-    upload_start = time.perf_counter()
-    upload_stats = upload_saved_embeddings(
-        dataset_manifests,
-        batch_size=int(upload_batch_size),
-        muvera_params=muvera_params,
-        pq_params=pq_params,
-        write_cluster_lmdb=write_cluster_lmdb,
-    )
-    upload_seconds = time.perf_counter() - upload_start
+    if resume_eval_only:
+        if upload_checkpoint is not None:
+            resume_reason = "upload_checkpoint"
+            deleted_collections = list(upload_checkpoint.get("deleted_collections") or [])
+            reset_seconds = upload_checkpoint.get("reset_seconds")
+            upload_seconds = upload_checkpoint.get("upload_seconds")
+            upload_stats = upload_checkpoint.get("upload") or _build_upload_stats_from_dataset_manifests(dataset_manifests)
+            checkpoint_disk = upload_checkpoint.get("disk_usage") or {}
+            disk_usage_command = str(checkpoint_disk.get("command") or "")
+            disk_usage_raw = str(checkpoint_disk.get("raw") or "")
+            disk_usage_bytes = checkpoint_disk.get("bytes")
+            disk_usage_status = str(checkpoint_disk.get("status") or "")
+            disk_usage_note = str(checkpoint_disk.get("note") or "")
+        else:
+            resume_reason = "existing_eval_run_files"
+            deleted_collections = []
+            reset_seconds = None
+            upload_seconds = None
+            upload_stats = _build_upload_stats_from_dataset_manifests(dataset_manifests)
+            disk_usage_command = ""
+            disk_usage_raw = ""
+            disk_usage_bytes = None
+            disk_usage_status = ""
+            disk_usage_note = (
+                "Upload checkpoint was unavailable, so upload/reset timings could not be recovered. "
+                "Existing eval run files were used to resume from the current Weaviate state."
+            )
 
-    if skip_disk_usage:
-        disk_usage_command = ""
-        disk_usage_raw = ""
-        disk_usage_bytes = None
-        disk_usage_status = "skipped"
-        disk_usage_note = (
-            "Disk usage measurement was skipped because the sweep controller could not execute "
-            "`du -sh` on the Weaviate host."
+        if skip_disk_usage:
+            if not disk_usage_status:
+                disk_usage_status = "skipped"
+                disk_usage_note = (
+                    "Disk usage measurement was skipped because the sweep controller could not execute "
+                    "`du -sh` on the Weaviate host."
+                )
+        elif not disk_usage_status:
+            disk_usage_command, disk_usage_raw, disk_usage_bytes = measure_disk_usage(
+                weaviate_data_path,
+                ssh_target=disk_usage_ssh_target,
+                ssh_args=disk_usage_ssh_args,
+            )
+            disk_usage_status = "measured"
+            disk_usage_note = ""
+
+        print(
+            f"[phase2] Resuming eval-only for run {run_id}: reason={resume_reason} "
+            f"existing_run_files={len(existing_eval_runs)}"
         )
     else:
-        disk_usage_command, disk_usage_raw, disk_usage_bytes = measure_disk_usage(
-            weaviate_data_path,
-            ssh_target=disk_usage_ssh_target,
-            ssh_args=disk_usage_ssh_args,
+        reset_start = time.perf_counter()
+        deleted_collections = reset_weaviate_state(muvera_params=muvera_params, pq_params=pq_params)
+        reset_seconds = time.perf_counter() - reset_start
+
+        upload_start = time.perf_counter()
+        upload_stats = upload_saved_embeddings(
+            dataset_manifests,
+            batch_size=int(upload_batch_size),
+            muvera_params=muvera_params,
+            pq_params=pq_params,
+            write_cluster_lmdb=write_cluster_lmdb,
         )
-        disk_usage_status = "measured"
-        disk_usage_note = ""
+        upload_seconds = time.perf_counter() - upload_start
+
+        if skip_disk_usage:
+            disk_usage_command = ""
+            disk_usage_raw = ""
+            disk_usage_bytes = None
+            disk_usage_status = "skipped"
+            disk_usage_note = (
+                "Disk usage measurement was skipped because the sweep controller could not execute "
+                "`du -sh` on the Weaviate host."
+            )
+        else:
+            disk_usage_command, disk_usage_raw, disk_usage_bytes = measure_disk_usage(
+                weaviate_data_path,
+                ssh_target=disk_usage_ssh_target,
+                ssh_args=disk_usage_ssh_args,
+            )
+            disk_usage_status = "measured"
+            disk_usage_note = ""
+
+        _json_dump(
+            upload_checkpoint_path,
+            {
+                "schema_version": 1,
+                "phase": "parameter_sweep_upload_complete",
+                "run_id": run_id,
+                "timestamp": run_started_at,
+                "deleted_collections": list(deleted_collections),
+                "reset_seconds": reset_seconds,
+                "upload_seconds": upload_seconds,
+                "upload": upload_stats,
+                "disk_usage": {
+                    "status": disk_usage_status,
+                    "command": disk_usage_command,
+                    "raw": disk_usage_raw,
+                    "bytes": disk_usage_bytes,
+                    "path": str(weaviate_data_path),
+                    "note": disk_usage_note,
+                },
+            },
+        )
 
     print(f"[phase2] Starting eval for run {run_id}")
     eval_start = time.perf_counter()
@@ -535,9 +673,13 @@ def run_single_configuration(
         balanced_k=balanced_k,
         recall_threshold=recall_threshold,
         latency_cap_ms=latency_cap_ms,
+        resume_existing_runs=resume_eval_only,
     )
     eval_seconds = time.perf_counter() - eval_start
-    total_seconds = time.perf_counter() - total_start
+    if resume_eval_only:
+        total_seconds = float(reset_seconds or 0.0) + float(upload_seconds or 0.0) + float(eval_seconds)
+    else:
+        total_seconds = time.perf_counter() - total_start
 
     manifest = {
         "schema_version": 1,
@@ -564,6 +706,17 @@ def run_single_configuration(
             "upload_seconds": upload_seconds,
             "evaluation_seconds": eval_seconds,
             "total_seconds": total_seconds,
+        },
+        "resume": {
+            "eval_only_resumed": bool(resume_eval_only),
+            "reason": resume_reason,
+            "upload_checkpoint_path": str(upload_checkpoint_path.resolve()) if upload_checkpoint_path.exists() else "",
+            "existing_eval_run_files": [p.name for p in existing_eval_runs],
+            "note": (
+                "Eval resumed from existing Weaviate state and prior .run files."
+                if resume_eval_only
+                else ""
+            ),
         },
         "reset_behavior": {
             "collections_deleted": list(deleted_collections),
@@ -611,7 +764,7 @@ def run_single_configuration(
     _json_dump(manifest_path, manifest)
     print(
         f"[phase2] Completed run {run_id}: pq={int(bool(pq_enabled))} disk={disk_usage_raw} dim={dimensionality} "
-        f"upload_s={upload_seconds:.1f} eval_s={eval_seconds:.1f}"
+        f"upload_s={_format_seconds(upload_seconds)} eval_s={_format_seconds(eval_seconds)}"
     )
     return {
         "manifest": manifest,
@@ -804,7 +957,7 @@ def _build_sweep_manifest(
         "schema_version": 1,
         "created_at": datetime.now().astimezone().isoformat(),
         "phase": "parameter_sweep",
-        "embeddings_root": str(Path(args.embeddings_root).resolve()),
+        "embeddings_roots": [str(Path(root).resolve()) for root in args.embeddings_root],
         "output_root": str(output_root),
         "dataset_ids": dataset_ids,
         "weaviate_data_path": str(args.weaviate_data_path),
@@ -860,7 +1013,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run MUVERA parameter sweeps from saved embedding datasets without re-embedding."
     )
-    parser.add_argument("--embeddings-root", type=Path, required=True)
+    parser.add_argument(
+        "--embeddings-root",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="One or more roots containing per-dataset manifest.json + embedding stores.",
+    )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--start-date", type=str, default="2025-09-02")
     parser.add_argument("--num-datasets", type=int, default=4)
@@ -939,7 +1098,8 @@ def main() -> None:
         download_path=Path(args.download_path).resolve(),
         dataset_product=args.dataset_product,
     )
-    dataset_manifests = _load_dataset_manifests(Path(args.embeddings_root).resolve(), dataset_ids)
+    embeddings_roots = [Path(root).resolve() for root in args.embeddings_root]
+    dataset_manifests = _load_dataset_manifests(embeddings_roots, dataset_ids)
     ksim_values = _parse_int_list(args.ksim_list, "--ksim-list")
     dprojection_values = _parse_int_list(args.dprojections_list, "--dprojections-list")
     repetition_values = _parse_int_list(args.repetitions_list, "--repetitions-list")
@@ -988,7 +1148,7 @@ def main() -> None:
             runs.append(_load_completed_run_from_manifest(manifest_path))
             continue
         if manifest_path.parent.exists() and not manifest_path.exists():
-            print(f"[phase2] Found incomplete prior run; rerunning from scratch: {run_id}")
+            print(f"[phase2] Found incomplete prior run; attempting resume: {run_id}")
         run = run_single_configuration(
             output_root=output_root,
             dataset_manifests=dataset_manifests,

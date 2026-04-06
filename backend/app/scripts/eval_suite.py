@@ -393,6 +393,83 @@ def _write_run_file(path: Path, runs_by_qid: dict[str, list[RunRecord]], tag: st
                 )
 
 
+def _read_run_file(path: Path) -> dict[str, list[RunRecord]]:
+    runs_by_qid: dict[str, list[RunRecord]] = {}
+    if not path.exists():
+        return runs_by_qid
+    with path.open("r", encoding="utf-8", newline="") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 6:
+                continue
+            qid, _, target_id, rank, score, _tag = parts[:6]
+            rec = RunRecord(
+                query_id=str(qid).strip(),
+                target_id=str(target_id).strip(),
+                claim_id="",
+                doc_id="",
+                score=float(score),
+                rank=int(rank),
+            )
+            runs_by_qid.setdefault(rec.query_id, []).append(rec)
+    for qid, rows in runs_by_qid.items():
+        rows.sort(key=lambda r: int(r.rank))
+    return runs_by_qid
+
+
+def _timing_cache_path(runs_dir: Path, limit: int) -> Path:
+    return runs_dir / f"L{int(limit)}.timing.json"
+
+
+def _write_timing_cache(
+    path: Path,
+    *,
+    retrieve_times_qid: dict[str, dict[str, float]],
+    rerank_times_qid: dict[str, dict[str, float]],
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "retrieve_times_qid": retrieve_times_qid,
+        "rerank_times_qid": rerank_times_qid,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_timing_cache(
+    path: Path,
+    *,
+    eval_qids: list[str],
+    need_rerank: bool,
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]], bool]:
+    zero = {"retrieval_ms": 0.0, "rerank_ms": 0.0, "total_ms": 0.0}
+    retrieve_times_qid = {qid: dict(zero) for qid in eval_qids}
+    rerank_times_qid = {qid: dict(zero) for qid in eval_qids} if need_rerank else {}
+    if not path.exists():
+        return retrieve_times_qid, rerank_times_qid, False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return retrieve_times_qid, rerank_times_qid, False
+
+    cached_retrieve = payload.get("retrieve_times_qid") or {}
+    cached_rerank = payload.get("rerank_times_qid") or {}
+    for qid in eval_qids:
+        if isinstance(cached_retrieve.get(qid), dict):
+            retrieve_times_qid[qid] = {
+                "retrieval_ms": float(cached_retrieve[qid].get("retrieval_ms", 0.0)),
+                "rerank_ms": float(cached_retrieve[qid].get("rerank_ms", 0.0)),
+                "total_ms": float(cached_retrieve[qid].get("total_ms", 0.0)),
+            }
+        if need_rerank and isinstance(cached_rerank.get(qid), dict):
+            rerank_times_qid[qid] = {
+                "retrieval_ms": float(cached_rerank[qid].get("retrieval_ms", 0.0)),
+                "rerank_ms": float(cached_rerank[qid].get("rerank_ms", 0.0)),
+                "total_ms": float(cached_rerank[qid].get("total_ms", 0.0)),
+            }
+    return retrieve_times_qid, rerank_times_qid, True
+
+
 def _mean_timing_ms(timing_rows: list[dict[str, float]]) -> tuple[float, float, float]:
     return (
         mean(r["retrieval_ms"] for r in timing_rows),
@@ -610,6 +687,11 @@ def main() -> None:
         default=None,
         help="Optional latency cap for balanced config selection. Default: 1.5x median total time.",
     )
+    parser.add_argument(
+        "--resume-existing-runs",
+        action="store_true",
+        help="Reuse existing per-limit run files in output-dir/runs and continue with missing limits only.",
+    )
     args = parser.parse_args()
 
     if args.rerank_k is not None and args.rerank_k <= 0:
@@ -678,73 +760,99 @@ def main() -> None:
 
     for limit in limits:
         print(f"[sweep] retrieval_limit={limit}")
-        retrieve_runs_qid: dict[str, list[RunRecord]] = {}
-        rerank_runs_qid: dict[str, list[RunRecord]] = {}
-        retrieve_times_qid: dict[str, dict[str, float]] = {}
-        rerank_times_qid: dict[str, dict[str, float]] = {}
-
         effective_rerank_k = int(limit if args.rerank_k is None else min(int(args.rerank_k), int(limit)))
+        retrieve_run_path = runs_dir / f"retrieve_L{limit}.run"
+        rerank_run_path = runs_dir / f"rerank_L{limit}.run"
+        timing_cache_path = _timing_cache_path(runs_dir, limit)
+        can_resume_limit = bool(
+            args.resume_existing_runs and retrieve_run_path.exists() and (not need_rerank or rerank_run_path.exists())
+        )
 
-        for idx, qid in enumerate(eval_qids, start=1):
-            query_text = queries[qid]
-            print(f"[sweep] L={limit} q={idx}/{len(eval_qids)} mode=retrieve")
-
-            t0 = time.perf_counter()
-            hits = rr.retrieve_claims(
-                query_text,
-                limit=int(limit),
-                shard=args.shard,
-                retrieval_mode=args.retrieval_mode,
-                hybrid_alpha=float(args.hybrid_alpha),
+        if can_resume_limit:
+            print(f"[resume] Reusing existing run files for L={limit}")
+            retrieve_runs_qid = _read_run_file(retrieve_run_path)
+            rerank_runs_qid = _read_run_file(rerank_run_path) if need_rerank else {}
+            retrieve_times_qid, rerank_times_qid, has_timing_cache = _load_timing_cache(
+                timing_cache_path,
+                eval_qids=eval_qids,
+                need_rerank=need_rerank,
             )
-            retrieval_ms = (time.perf_counter() - t0) * 1000.0
-            retrieve_records = _build_run_records(qid, hits, id_field=id_field)
-            retrieve_runs_qid[qid] = retrieve_records
-            retrieve_times_qid[qid] = {
-                "retrieval_ms": retrieval_ms,
-                "rerank_ms": 0.0,
-                "total_ms": retrieval_ms,
-            }
-
-            if not id_field_presence_checked:
-                if id_field == "claim_id":
-                    if not any((h.claim_id or "").strip() for h in hits):
-                        raise RuntimeError(
-                            "qrels uses claim_id but retrieval hits have empty claim_id values. "
-                            "ID scheme mismatch; aborting."
-                        )
-                if id_field == "doc_id":
-                    if not any((h.doc_id or "").strip() for h in hits):
-                        raise RuntimeError(
-                            "qrels uses doc_id but retrieval hits have empty doc_id values. "
-                            "ID scheme mismatch; aborting."
-                        )
-                id_field_presence_checked = True
-
-            if need_rerank:
-                print(f"[sweep] L={limit} q={idx}/{len(eval_qids)} mode=rerank")
-                query_tokens = rr._embed_query_tokens(query_text, args.shard)
-                t1 = time.perf_counter()
-                reranked_hits = rr.rerank_hits(
-                    list(hits),
-                    query_text,
-                    shard=args.shard,
-                    rerank_k=effective_rerank_k,
-                    rerank_source=args.rerank_source,
-                    query_tokens=query_tokens,
+            if not has_timing_cache:
+                warnings.append(
+                    f"Resumed L={limit} from existing run files without timing cache. "
+                    "Timing metrics for this limit were recorded as 0.0."
                 )
-                rerank_ms = (time.perf_counter() - t1) * 1000.0
-                rerank_records = _build_run_records(qid, reranked_hits, id_field=id_field)
-                rerank_runs_qid[qid] = rerank_records
-                rerank_times_qid[qid] = {
+        else:
+            retrieve_runs_qid = {}
+            rerank_runs_qid = {}
+            retrieve_times_qid = {}
+            rerank_times_qid = {}
+
+            for idx, qid in enumerate(eval_qids, start=1):
+                query_text = queries[qid]
+                print(f"[sweep] L={limit} q={idx}/{len(eval_qids)} mode=retrieve")
+
+                t0 = time.perf_counter()
+                hits = rr.retrieve_claims(
+                    query_text,
+                    limit=int(limit),
+                    shard=args.shard,
+                    retrieval_mode=args.retrieval_mode,
+                    hybrid_alpha=float(args.hybrid_alpha),
+                )
+                retrieval_ms = (time.perf_counter() - t0) * 1000.0
+                retrieve_records = _build_run_records(qid, hits, id_field=id_field)
+                retrieve_runs_qid[qid] = retrieve_records
+                retrieve_times_qid[qid] = {
                     "retrieval_ms": retrieval_ms,
-                    "rerank_ms": rerank_ms,
-                    "total_ms": retrieval_ms + rerank_ms,
+                    "rerank_ms": 0.0,
+                    "total_ms": retrieval_ms,
                 }
 
-        _write_run_file(runs_dir / f"retrieve_L{limit}.run", retrieve_runs_qid, tag=f"retrieve_L{limit}")
-        if need_rerank:
-            _write_run_file(runs_dir / f"rerank_L{limit}.run", rerank_runs_qid, tag=f"rerank_L{limit}")
+                if not id_field_presence_checked:
+                    if id_field == "claim_id":
+                        if not any((h.claim_id or "").strip() for h in hits):
+                            raise RuntimeError(
+                                "qrels uses claim_id but retrieval hits have empty claim_id values. "
+                                "ID scheme mismatch; aborting."
+                            )
+                    if id_field == "doc_id":
+                        if not any((h.doc_id or "").strip() for h in hits):
+                            raise RuntimeError(
+                                "qrels uses doc_id but retrieval hits have empty doc_id values. "
+                                "ID scheme mismatch; aborting."
+                            )
+                    id_field_presence_checked = True
+
+                if need_rerank:
+                    print(f"[sweep] L={limit} q={idx}/{len(eval_qids)} mode=rerank")
+                    query_tokens = rr._embed_query_tokens(query_text, args.shard)
+                    t1 = time.perf_counter()
+                    reranked_hits = rr.rerank_hits(
+                        list(hits),
+                        query_text,
+                        shard=args.shard,
+                        rerank_k=effective_rerank_k,
+                        rerank_source=args.rerank_source,
+                        query_tokens=query_tokens,
+                    )
+                    rerank_ms = (time.perf_counter() - t1) * 1000.0
+                    rerank_records = _build_run_records(qid, reranked_hits, id_field=id_field)
+                    rerank_runs_qid[qid] = rerank_records
+                    rerank_times_qid[qid] = {
+                        "retrieval_ms": retrieval_ms,
+                        "rerank_ms": rerank_ms,
+                        "total_ms": retrieval_ms + rerank_ms,
+                    }
+
+            _write_run_file(retrieve_run_path, retrieve_runs_qid, tag=f"retrieve_L{limit}")
+            if need_rerank:
+                _write_run_file(rerank_run_path, rerank_runs_qid, tag=f"rerank_L{limit}")
+            _write_timing_cache(
+                timing_cache_path,
+                retrieve_times_qid=retrieve_times_qid,
+                rerank_times_qid=rerank_times_qid,
+            )
 
         retrieve_run_qids = {qid for qid, rows in retrieve_runs_qid.items() if rows}
         if len(retrieve_run_qids) != len(eval_qids):

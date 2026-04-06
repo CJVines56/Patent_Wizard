@@ -15,6 +15,7 @@ import json
 import math
 import os
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -45,6 +46,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _safe_float(value: str | None, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 _DEFAULT_HTTP_HOST = os.environ.get(
     "WEAVIATE_HTTP_HOST",
     os.environ.get("WEAVIATE_LOCAL_HOST", "127.0.0.1"),
@@ -70,6 +78,25 @@ VALID_RETRIEVAL_MODES = ("vector", "bm25", "hybrid")
 VALID_RERANK_SOURCES = ("lmdb", "weaviate")
 WEAVIATE_VECTOR_FETCH_BATCH_SIZE = max(1, int(os.environ.get("WEAVIATE_VECTOR_FETCH_BATCH_SIZE", "128")))
 WEAVIATE_VECTOR_FETCH_MODE = os.environ.get("WEAVIATE_VECTOR_FETCH_MODE", "auto").strip().lower() or "auto"
+WEAVIATE_GRAPHQL_TIMEOUT_SECONDS = max(
+    1.0,
+    _safe_float(
+        os.environ.get("WEAVIATE_GRAPHQL_TIMEOUT_SECONDS", os.environ.get("WEAVIATE_HTTP_TIMEOUT_SECONDS", "300")),
+        300.0,
+    ),
+)
+WEAVIATE_OBJECT_TIMEOUT_SECONDS = max(
+    1.0,
+    _safe_float(
+        os.environ.get("WEAVIATE_OBJECT_TIMEOUT_SECONDS", os.environ.get("WEAVIATE_HTTP_TIMEOUT_SECONDS", "300")),
+        300.0,
+    ),
+)
+WEAVIATE_HTTP_RETRIES = max(0, int(os.environ.get("WEAVIATE_HTTP_RETRIES", "2")))
+WEAVIATE_HTTP_RETRY_BACKOFF_SECONDS = max(
+    0.0,
+    _safe_float(os.environ.get("WEAVIATE_HTTP_RETRY_BACKOFF_SECONDS", "2"), 2.0),
+)
 
 _WEAVIATE_VECTOR_CLIENT = None
 
@@ -79,14 +106,6 @@ def _normalize_retrieval_mode(value: str | None) -> str:
     if mode not in VALID_RETRIEVAL_MODES:
         raise ValueError(f"Unknown retrieval mode '{value}'. Choose from: {list(VALID_RETRIEVAL_MODES)}")
     return mode
-
-
-def _safe_float(value: str | None, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
 
 def _clamp_hybrid_alpha(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
@@ -132,7 +151,27 @@ class ClaimHit:
 
 
 def _post_graphql(query: str) -> dict:
-    resp = requests.post(WEAVIATE_GRAPHQL, json={"query": query}, timeout=60)
+    last_exc: Exception | None = None
+    for attempt in range(WEAVIATE_HTTP_RETRIES + 1):
+        try:
+            resp = requests.post(
+                WEAVIATE_GRAPHQL,
+                json={"query": query},
+                timeout=WEAVIATE_GRAPHQL_TIMEOUT_SECONDS,
+            )
+            break
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            if attempt >= WEAVIATE_HTTP_RETRIES:
+                raise
+            sleep_s = WEAVIATE_HTTP_RETRY_BACKOFF_SECONDS * (attempt + 1)
+            print(
+                f"[warn] GraphQL request failed ({type(exc).__name__}) attempt={attempt + 1}/"
+                f"{WEAVIATE_HTTP_RETRIES + 1}; retrying in {sleep_s:.1f}s"
+            )
+            time.sleep(sleep_s)
+    else:
+        raise last_exc or RuntimeError("GraphQL request failed without an exception.")
     if resp.status_code != 200:
         print("STATUS:", resp.status_code)
         print("RESPONSE:", resp.text)
@@ -315,7 +354,27 @@ def _fetch_colbert_vectors_from_weaviate_http(object_ids: list[str]) -> dict[str
     out: dict[str, np.ndarray] = {}
     for oid in ids:
         url = f"{WEAVIATE_OBJECTS}/Claim/{oid}"
-        resp = sess.get(url, params={"include": "vector"}, timeout=60)
+        last_exc: Exception | None = None
+        for attempt in range(WEAVIATE_HTTP_RETRIES + 1):
+            try:
+                resp = sess.get(
+                    url,
+                    params={"include": "vector"},
+                    timeout=WEAVIATE_OBJECT_TIMEOUT_SECONDS,
+                )
+                break
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                if attempt >= WEAVIATE_HTTP_RETRIES:
+                    raise
+                sleep_s = WEAVIATE_HTTP_RETRY_BACKOFF_SECONDS * (attempt + 1)
+                print(
+                    f"[warn] Object vector fetch failed ({type(exc).__name__}) oid={oid} "
+                    f"attempt={attempt + 1}/{WEAVIATE_HTTP_RETRIES + 1}; retrying in {sleep_s:.1f}s"
+                )
+                time.sleep(sleep_s)
+        else:
+            raise last_exc or RuntimeError(f"Object vector fetch failed for {oid} without an exception.")
         if resp.status_code != 200:
             raise RuntimeError(f"Weaviate vector fetch failed for {oid}: {resp.status_code} {resp.text[:300]}")
         payload = resp.json()

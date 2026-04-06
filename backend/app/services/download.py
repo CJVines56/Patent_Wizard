@@ -835,7 +835,42 @@ def _flush_collector(chunks):
         flush()
 
 
-def _dataset_file_base(input_date: str | datetime, path: Path, dataset_product: str) -> tuple[Path, str, datetime, str]:
+def _normalize_archive_stem_override(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    name = Path(raw).name
+    lower = name.lower()
+    for ext in (".tar.gz", ".tgz", ".tar", ".zip"):
+        if lower.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
+def _normalize_target_doc_id(value: str | None) -> str | None:
+    raw = "".join(ch for ch in str(value or "").strip().upper() if ch.isalnum())
+    if raw.startswith("US") and len(raw) > 2:
+        raw = raw[2:]
+    return raw or None
+
+
+def _normalize_target_doc_ids(values) -> set[str] | None:
+    if values is None:
+        return None
+    normalized = {
+        value
+        for value in (_normalize_target_doc_id(item) for item in values)
+        if value
+    }
+    return normalized
+
+
+def _dataset_file_base(
+    input_date: str | datetime,
+    path: Path,
+    dataset_product: str,
+    archive_stem_override: str | None = None,
+) -> tuple[Path, str, datetime, str]:
     """Return (base path without extension, ext hint, last_tuesday, product_upper)."""
     path = Path(path)
     start_date = datetime.strptime(input_date, "%Y-%m-%d") if isinstance(input_date, str) else input_date
@@ -843,7 +878,11 @@ def _dataset_file_base(input_date: str | datetime, path: Path, dataset_product: 
     last_tuesday = start_date - timedelta(days=days_since_tuesday)
     dataset_product = str(dataset_product)
     product_upper = dataset_product.upper()
-    if product_upper == "PTGRDT":
+    override = _normalize_archive_stem_override(archive_stem_override)
+    if override:
+        file_stem = override
+        ext_hint = ".tar" if product_upper == "PTGRDT" else ".zip"
+    elif product_upper == "PTGRDT":
         file_stem = f"I{last_tuesday:%Y%m%d}"
         ext_hint = ".tar"
     else:
@@ -2558,6 +2597,8 @@ def bulk_dataset_download(
     metadata_mismatch_csv: Path | None = None,
     max_patents: int | None = 1000,
     master_manifest_csv: Path | None = None,
+    archive_stem_override: str | None = None,
+    include_doc_ids = None,
 ) -> list[dict] | None:
     '''This function takes in a start date and creates an end date 7 days later.
     It then queries the USPTO bulk data API for available datasets in that date range.
@@ -2589,18 +2630,24 @@ def bulk_dataset_download(
     collect_chunks = return_chunks or sample_enabled
     max_patents = max_patents if (max_patents is None or max_patents > 0) else None
     seen_doc_ids: set[str] = set()
+    target_doc_ids = _normalize_target_doc_ids(include_doc_ids)
     stop_processing = False
 
     def _register_doc_id(doc_id: str | None) -> bool:
         nonlocal stop_processing
-        if not doc_id:
+        normalized_doc_id = _normalize_target_doc_id(doc_id)
+        if not normalized_doc_id:
             return False
-        if doc_id in seen_doc_ids:
+        if target_doc_ids is not None and normalized_doc_id not in target_doc_ids:
+            return False
+        if normalized_doc_id in seen_doc_ids:
             return True
         if max_patents is not None and len(seen_doc_ids) >= max_patents:
             stop_processing = True
             return False
-        seen_doc_ids.add(doc_id)
+        seen_doc_ids.add(normalized_doc_id)
+        if target_doc_ids and seen_doc_ids.issuperset(target_doc_ids):
+            stop_processing = True
         return True
     sampler: StreamingSampler | None = None
     sample_target_dir = sample_out_dir or path
@@ -2613,7 +2660,12 @@ def bulk_dataset_download(
                 manifest_ids = None
         sampler = StreamingSampler(k=sample_k, out_dir=sample_target_dir, seed=sample_seed, manifest_doc_ids=manifest_ids)
 
-    base, ext_hint, last_tuesday, product_upper = _dataset_file_base(input_date, path, dataset_product)
+    base, ext_hint, last_tuesday, product_upper = _dataset_file_base(
+        input_date,
+        path,
+        dataset_product,
+        archive_stem_override=archive_stem_override,
+    )
     file_stem = base.name
     path.mkdir(parents=True, exist_ok=True)
     existing_path = _find_existing_archive(base)

@@ -402,6 +402,30 @@ def load_dataset_embeddings_from_lmdb(path: Path | str):
     finally:
         env.close()
 
+
+def dataset_embedding_entry_count(lmdb_env: lmdb.Environment) -> int:
+    with lmdb_env.begin(write=False) as txn:
+        stat = txn.stat()
+    return int(stat.get("entries", 0))
+
+
+def filter_new_dataset_embedding_records(
+    lmdb_env: lmdb.Environment,
+    records: list[dict],
+) -> tuple[list[dict], int]:
+    if not records:
+        return [], 0
+    pending: list[dict] = []
+    skipped = 0
+    with lmdb_env.begin(write=False) as txn:
+        for record in records:
+            key = str(record.get("weaviate_claim_uuid") or _claim_uuid_for_record(record)).encode("utf-8")
+            if txn.get(key) is None:
+                pending.append(record)
+            else:
+                skipped += 1
+    return pending, skipped
+
 def _serialize_colbert(vectors) -> bytes:
     buffer = io.BytesIO()
     if isinstance(vectors, dict) and "data" in vectors and "scale" in vectors:
