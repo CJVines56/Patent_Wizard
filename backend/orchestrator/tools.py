@@ -7,13 +7,9 @@ import requests
 from langchain.tools import tool
 
 from backend.app.services.download import rich_to_plain
-from backend.app.store import (
-    LMDB_PATH_128_F16,
-    LMDB_PATH_128_F32,
-    load_claim_payloads_from_lmdb,
-    load_colbert_from_lmdb,
-    load_patent_metadata_batch_from_lmdb,
-    resolve_lmdb_path,
+from backend.app.scripts.retrieve_rerank import (
+    ClaimHit,
+    rerank_hits,
 )
 from backend.app.vector_config import WEAVIATE_NAMED_VECTOR, assert_128_variant
 
@@ -29,6 +25,7 @@ RETRIEVE_SHARD = assert_128_variant(
     context="orchestrator.RETRIEVE_SHARD",
 )
 RERANK_K = int(os.environ.get("RERANK_K", str(max(DEFAULT_LIMIT, 200))))
+RERANK_SOURCE = str(os.environ.get("RERANK_SOURCE", "weaviate") or "weaviate").strip().lower()
 _retrieval_mode_env = os.environ.get("RETRIEVAL_MODE", os.environ.get("WEAVIATE_RETRIEVAL_MODE", "vector"))
 RETRIEVAL_MODE = str(_retrieval_mode_env or "vector").strip().lower()
 if RETRIEVAL_MODE not in {"vector", "bm25", "hybrid"}:
@@ -49,8 +46,8 @@ FORCE_CLIENT_HYBRID = os.environ.get("FORCE_CLIENT_HYBRID", "1").strip() not in 
 }
 
 SHARD_TO_PATH = {
-    "128_f16": LMDB_PATH_128_F16,
-    "128_f32": LMDB_PATH_128_F32,
+    "128_f16": "128_f16",
+    "128_f32": "128_f32",
 }
 
 
@@ -77,8 +74,6 @@ def _embed_query_tokens_for_shard(query: str, shard: str) -> np.ndarray:
     )
 
     shard = assert_128_variant(shard, context="orchestrator._embed_query_tokens_for_shard")
-    if shard not in SHARD_TO_PATH:
-        raise ValueError(f"Unknown shard '{shard}'. Choose from: {sorted(SHARD_TO_PATH)}")
     query_text = normalize_text_for_embedding(query)
     vecs = np.asarray(shared_embed_query_tokens_for_shard(query_text, shard=shard, max_length=256))
     if vecs.ndim == 1:
@@ -148,6 +143,17 @@ def _build_claim_where(doc_ids: List[str]) -> str:
     return "where:{operator:Or,operands:[%s]}," % ",".join(operands)
 
 
+def _build_patent_where(doc_ids: List[str]) -> str:
+    if not doc_ids:
+        return ""
+    operands = []
+    for doc_id in doc_ids:
+        operands.append(
+            "{path:[\"doc_id\"],operator:Equal,valueText:%s}" % _escape_text(str(doc_id))
+        )
+    return "where:{operator:Or,operands:[%s]}," % ",".join(operands)
+
+
 def _build_retrieval_clause(query: str, mode: str, hybrid_alpha: float, query_vector: List[List[float]]) -> str:
     if mode == "bm25":
         return f"bm25:{{query:{_escape_text(query)}}},"
@@ -174,7 +180,7 @@ def _query_claim_rows(retrieval_clause: str, claim_where: str, limit: int) -> Li
         "{ Get { Claim("
         f"{retrieval_clause}"
         f"{claim_where} limit: {int(limit)}"
-        ") { claim_id doc_id _additional { id distance } } } }"
+        ") { claim_id doc_id claim_type text _additional { id distance } } } }"
     )
     data = _post_graphql(gql)
     return data.get("Get", {}).get("Claim", []) or []
@@ -261,7 +267,45 @@ def _normalize_retrieval_mode(value: str | None) -> str:
 
 
 def _fetch_patent_metadata(doc_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    return load_patent_metadata_batch_from_lmdb(doc_ids)
+    ordered = []
+    seen = set()
+    for doc_id in doc_ids:
+        value = str(doc_id or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            ordered.append(value)
+    if not ordered:
+        return {}
+    gql = (
+        "{ Get { Patent("
+        f"{_build_patent_where(ordered)} limit: {int(len(ordered))}"
+        ") { doc_id filing_date classification authors title kind } } }"
+    )
+    data = _post_graphql(gql)
+    rows = data.get("Get", {}).get("Patent", []) or []
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        doc_id = str(row.get("doc_id") or "").strip()
+        if doc_id:
+            out[doc_id] = row
+    return out
+
+
+def _rows_to_hits(items: List[Dict[str, Any]]) -> List[ClaimHit]:
+    hits: List[ClaimHit] = []
+    for row in items:
+        addl = row.get("_additional") or {}
+        hits.append(
+            ClaimHit(
+                uuid=str(addl.get("id") or ""),
+                claim_id=str(row.get("claim_id") or ""),
+                doc_id=str(row.get("doc_id") or ""),
+                claim_type=str(row.get("claim_type") or ""),
+                text=rich_to_plain(str(row.get("text") or "")),
+                distance=addl.get("distance"),
+            )
+        )
+    return hits
 
 
 def _maxsim_score(query_tokens: np.ndarray, doc_tokens: np.ndarray) -> float:
@@ -275,51 +319,6 @@ def _maxsim_score(query_tokens: np.ndarray, doc_tokens: np.ndarray) -> float:
         return float("-inf")
     sims = qt @ dt.T
     return float(np.max(sims, axis=1).sum())
-
-
-def _rerank_hits_with_lmdb(hits: List[Dict[str, Any]], query: str, shard: str, rerank_k: int) -> List[Dict[str, Any]]:
-    shard = assert_128_variant(shard, context="orchestrator._rerank_hits_with_lmdb")
-    if shard not in SHARD_TO_PATH:
-        raise ValueError(f"Unknown shard '{shard}'. Choose from: {sorted(SHARD_TO_PATH)}")
-    q_tokens = _embed_query_tokens_for_shard(query, shard)
-    top = hits[: max(0, int(rerank_k))]
-    scored = []
-    for hit in top:
-        addl = hit.get("_additional") or {}
-        obj_id = addl.get("id")
-        claim_id = hit.get("claim_id")
-        doc_id = hit.get("doc_id")
-        if not obj_id and not claim_id:
-            continue
-        lmdb_path = resolve_lmdb_path(shard, doc_id=doc_id)
-        # Primary LMDB key is claim_id; keep UUID fallback for older ingests.
-        lookup_keys = [k for k in [claim_id, obj_id] if k]
-        doc_tokens = None
-        for k in lookup_keys:
-            doc_tokens = load_colbert_from_lmdb(lmdb_path, str(k))
-            if doc_tokens is not None:
-                break
-        if doc_tokens is None:
-            raise RuntimeError(f"Missing LMDB vectors for claim_id={claim_id} doc_id={doc_id}")
-        arr = np.asarray(doc_tokens)
-        if arr.ndim == 1:
-            arr = arr.reshape(1, -1)
-        if arr.ndim != 2 or arr.shape[1] != 128:
-            raise ValueError(
-                f"LMDB vectors must be [T,128] for claim_id={claim_id}; got shape={arr.shape}"
-            )
-        score = _maxsim_score(q_tokens, doc_tokens)
-        if score == float("-inf"):
-            raise RuntimeError(f"Invalid MaxSim score for claim_id={claim_id}")
-        scored.append((score, hit))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    reranked = [hit for _, hit in scored]
-    used = {id(hit) for hit in reranked}
-    for hit in top:
-        if id(hit) not in used:
-            reranked.append(hit)
-    reranked.extend(hits[int(rerank_k):])
-    return reranked
 
 
 @tool(response_format="content")
@@ -368,19 +367,20 @@ def retrieve_context(
                 int(DEFAULT_CANDIDATE_LIMIT),
             )
 
-    hits = _rerank_hits_with_lmdb(hits, query.strip(), RERANK_SHARD, RERANK_K)
-    hits = hits[:DEFAULT_LIMIT]
-
-    claim_payloads = load_claim_payloads_from_lmdb(
-        [str(hit.get("claim_id", "")).strip() for hit in hits if str(hit.get("claim_id", "")).strip()]
+    hit_rows = _rows_to_hits(hits)
+    hit_rows = rerank_hits(
+        hit_rows,
+        query.strip(),
+        RERANK_SHARD,
+        RERANK_K,
+        rerank_source=RERANK_SOURCE,
     )
+    hit_rows = hit_rows[:DEFAULT_LIMIT]
 
     unique_doc_ids = []
     seen_doc_ids = set()
-    for hit in hits:
-        claim_id = str(hit.get("claim_id", "")).strip()
-        payload = claim_payloads.get(claim_id) or {}
-        did = str(hit.get("doc_id", "") or payload.get("doc_id") or "").strip()
+    for hit in hit_rows:
+        did = str(hit.doc_id or "").strip()
         if did and did not in seen_doc_ids:
             seen_doc_ids.add(did)
             unique_doc_ids.append(did)
@@ -388,25 +388,23 @@ def retrieve_context(
     patent_meta = _fetch_patent_metadata(unique_doc_ids)
 
     chunks: List[Dict[str, Any]] = []
-    for hit in hits:
-        addl = hit.get("_additional") or {}
-        claim_id = str(hit.get("claim_id", "")).strip()
-        payload = claim_payloads.get(claim_id) or {}
-        doc_id = str(hit.get("doc_id", "") or payload.get("doc_id") or "").strip()
+    for hit in hit_rows:
+        claim_id = str(hit.claim_id or "").strip()
+        doc_id = str(hit.doc_id or "").strip()
         patent_row = patent_meta.get(doc_id, {})
-        text = rich_to_plain(str(payload.get("text") or ""))
+        text = rich_to_plain(str(hit.text or ""))
         snippet = text[:500]
 
         # Include SearchItem-compatible fields in metadata for API shaping.
         metadata = {
-            "id": hit.get("claim_id") or addl.get("id", ""),
+            "id": hit.claim_id or hit.uuid or "",
             "title": patent_row.get("title", ""),
             "snippet": snippet,
             "search_text": text,
             "doc_id": doc_id,
             "claim_id": claim_id,
-            "claim_type": str(payload.get("claim_type") or ""),
-            "distance": addl.get("distance"),
+            "claim_type": str(hit.claim_type or ""),
+            "distance": hit.distance,
             "filing_date": patent_row.get("filing_date", ""),
             "classification": patent_row.get("classification", ""),
             "authors": patent_row.get("authors", []),
