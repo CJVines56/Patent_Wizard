@@ -810,17 +810,23 @@ def main() -> None:
                 }
 
                 if not id_field_presence_checked:
+                    if not hits:
+                        raise RuntimeError(
+                            "Retrieval returned zero hits for the first evaluated query. "
+                            "The Claim collection may be empty, the wrong Weaviate instance may be targeted, "
+                            "or retrieval returned no candidates; aborting."
+                        )
                     if id_field == "claim_id":
                         if not any((h.claim_id or "").strip() for h in hits):
                             raise RuntimeError(
-                                "qrels uses claim_id but retrieval hits have empty claim_id values. "
-                                "ID scheme mismatch; aborting."
+                                "qrels uses claim_id but non-empty retrieval hits have empty claim_id values. "
+                                "This points to a retrieval/property mapping issue, not a qrels format problem; aborting."
                             )
                     if id_field == "doc_id":
                         if not any((h.doc_id or "").strip() for h in hits):
                             raise RuntimeError(
-                                "qrels uses doc_id but retrieval hits have empty doc_id values. "
-                                "ID scheme mismatch; aborting."
+                                "qrels uses doc_id but non-empty retrieval hits have empty doc_id values. "
+                                "This points to a retrieval/property mapping issue, not a qrels format problem; aborting."
                             )
                     id_field_presence_checked = True
 

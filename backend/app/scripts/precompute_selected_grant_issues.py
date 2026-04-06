@@ -39,7 +39,18 @@ def _normalize_target_doc_id(value: str | None) -> str | None:
     raw = "".join(ch for ch in str(value or "").strip().upper() if ch.isalnum())
     if raw.startswith("US") and len(raw) > 2:
         raw = raw[2:]
+    if raw.isdigit():
+        raw = str(int(raw))
     return raw or None
+
+
+def _storage_dataset_id(target: dict[str, Any], *, include_full_issue: bool) -> str:
+    base = str(target.get("dataset_id") or "").strip()
+    if not base:
+        raise ValueError("Selected target is missing dataset_id.")
+    if include_full_issue:
+        return f"{base}__full_issue"
+    return base
 
 
 def _parse_set_ids(raw: str) -> set[str] | None:
@@ -108,6 +119,8 @@ def _build_target_manifest(
     *,
     status: str,
     target: dict[str, Any],
+    storage_dataset_id: str,
+    include_full_issue: bool,
     dataset_dir: Path,
     embeddings_path: Path,
     total_records: int,
@@ -139,7 +152,8 @@ def _build_target_manifest(
         "created_at": datetime.now().astimezone().isoformat(),
         "storage_format": "lmdb",
         "record_schema_version": 1,
-        "canonical_dataset_id": target["dataset_id"],
+        "canonical_dataset_id": storage_dataset_id,
+        "source_dataset_id": target["dataset_id"],
         "canonical_dataset_date": target["issue_date"],
         "input_date": target["issue_date"],
         "dataset_product": target["dataset_product"],
@@ -155,6 +169,7 @@ def _build_target_manifest(
             "set_id": target["set_id"],
             "label": str(target.get("label") or ""),
             "note": str(target.get("note") or ""),
+            "mode": "full_issue" if include_full_issue else "targeted_doc_ids",
             "requested_doc_ids": requested_doc_ids,
             "found_doc_ids": found_doc_ids,
             "missing_doc_ids": missing_doc_ids,
@@ -190,10 +205,11 @@ def export_selected_target(
     output_root: Path,
     download_path: Path,
     batch_size: int,
+    include_full_issue: bool,
     overwrite: bool,
     master_manifest_csv: Path | None,
 ) -> dict[str, Any]:
-    dataset_id = target["dataset_id"]
+    dataset_id = _storage_dataset_id(target, include_full_issue=include_full_issue)
     dataset_dir = output_root / dataset_id
     embeddings_path = dataset_dir / "embeddings.lmdb"
     manifest_path = dataset_dir / "manifest.json"
@@ -243,6 +259,8 @@ def export_selected_target(
             _build_target_manifest(
                 status="in_progress",
                 target=target,
+                storage_dataset_id=dataset_id,
+                include_full_issue=include_full_issue,
                 dataset_dir=dataset_dir,
                 embeddings_path=embeddings_path,
                 total_records=total_records,
@@ -275,6 +293,8 @@ def export_selected_target(
                     _build_target_manifest(
                         status="in_progress",
                         target=target,
+                        storage_dataset_id=dataset_id,
+                        include_full_issue=include_full_issue,
                         dataset_dir=dataset_dir,
                         embeddings_path=embeddings_path,
                         total_records=total_records,
@@ -321,6 +341,8 @@ def export_selected_target(
                 _build_target_manifest(
                     status="in_progress",
                     target=target,
+                    storage_dataset_id=dataset_id,
+                    include_full_issue=include_full_issue,
                     dataset_dir=dataset_dir,
                     embeddings_path=embeddings_path,
                     total_records=total_records,
@@ -348,7 +370,7 @@ def export_selected_target(
             max_patents=0,
             master_manifest_csv=master_manifest_csv,
             archive_stem_override=target["archive_stem"],
-            include_doc_ids=target["doc_ids"],
+            include_doc_ids=None if include_full_issue else target["doc_ids"],
         )
     finally:
         lmdb_env.close()
@@ -357,6 +379,8 @@ def export_selected_target(
     manifest = _build_target_manifest(
         status="complete",
         target=target,
+        storage_dataset_id=dataset_id,
+        include_full_issue=include_full_issue,
         dataset_dir=dataset_dir,
         embeddings_path=embeddings_path,
         total_records=total_records,
@@ -390,6 +414,11 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--download-path", type=Path, default=DOWNLOAD_DIR)
     parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument(
+        "--include-full-issue",
+        action="store_true",
+        help="Embed the full issue archive for each selected target instead of filtering to the requested patent IDs.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--master-manifest-csv",
@@ -407,7 +436,8 @@ def main() -> None:
     dataset_product, targets = _load_targets(spec_path, set_ids=set_ids)
     print(
         f"[selected] spec={spec_path} output_root={output_root} "
-        f"targets={len(targets)} dataset_product={dataset_product}"
+        f"targets={len(targets)} dataset_product={dataset_product} "
+        f"include_full_issue={int(bool(args.include_full_issue))}"
     )
 
     manifests: list[dict[str, Any]] = []
@@ -419,6 +449,7 @@ def main() -> None:
                 output_root=output_root,
                 download_path=download_path,
                 batch_size=int(args.batch_size),
+                include_full_issue=bool(args.include_full_issue),
                 overwrite=bool(args.overwrite),
                 master_manifest_csv=args.master_manifest_csv,
             )
@@ -432,6 +463,7 @@ def main() -> None:
         "set_ids": sorted(set_ids) if set_ids else [],
         "output_root": str(output_root),
         "download_path": str(download_path),
+        "include_full_issue": bool(args.include_full_issue),
         "dataset_ids": [m["canonical_dataset_id"] for m in manifests],
         "issue_dates": [m["canonical_dataset_date"] for m in manifests],
         "missing_doc_ids": {

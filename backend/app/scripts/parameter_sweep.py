@@ -15,6 +15,7 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
+import requests
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
@@ -26,6 +27,7 @@ from backend.app.store import (
     WEAVIATE_PQ_ENABLED,
     WEAVIATE_PQ_SEGMENTS,
     WEAVIATE_PQ_TRAINING_LIMIT,
+    get_client,
     load_dataset_embeddings_from_lmdb,
     reset_weaviate_state,
     store_embeddings,
@@ -133,6 +135,55 @@ def _build_upload_stats_from_dataset_manifests(dataset_manifests: list[dict[str,
     }
 
 
+def _current_claim_total_count() -> int | None:
+    try:
+        client = get_client()
+    except Exception as exc:
+        print(f"[warn] Could not initialize Weaviate client for resume validation: {exc}")
+        return None
+    try:
+        existing = set(client.collections.list_all())
+        if "Claim" not in existing:
+            return 0
+        collection = client.collections.get("Claim")
+        result = collection.aggregate.over_all(total_count=True)
+        total = getattr(result, "total_count", None)
+        if total is None:
+            return 0
+        return int(total)
+    except Exception as exc:
+        print(f"[warn] Could not inspect live Claim collection for resume validation: {exc}")
+        return None
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def _graphql_endpoint_base() -> str:
+    host = os.environ.get("WEAVIATE_HTTP_HOST", os.environ.get("WEAVIATE_LOCAL_HOST", "127.0.0.1")).strip() or "127.0.0.1"
+    port = os.environ.get("WEAVIATE_HTTP_PORT", os.environ.get("WEAVIATE_LOCAL_PORT", "8080")).strip() or "8080"
+    scheme = "https" if str(os.environ.get("WEAVIATE_HTTP_SECURE", "0")).strip().lower() in {"1", "true", "yes", "on"} else "http"
+    return f"{scheme}://{host}:{port}"
+
+
+def _graphql_claim_total_count() -> tuple[int | None, str]:
+    endpoint = os.environ.get("WEAVIATE_GRAPHQL", f"{_graphql_endpoint_base()}/v1/graphql").strip()
+    query = "{ Aggregate { Claim { meta { count } } } }"
+    try:
+        response = requests.post(endpoint, json={"query": query}, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        count = payload.get("data", {}).get("Aggregate", {}).get("Claim", [{}])[0].get("meta", {}).get("count")
+        if count is None:
+            return None, endpoint
+        return int(count), endpoint
+    except Exception as exc:
+        print(f"[warn] Could not inspect GraphQL Claim count at {endpoint}: {exc}")
+        return None, endpoint
+
+
 def _write_table(ws, start_row: int, headers: list[str], rows: list[dict[str, Any]]) -> int:
     header_fill = PatternFill(fill_type="solid", fgColor="D9E1F2")
     for col_idx, header in enumerate(headers, start=1):
@@ -196,28 +247,72 @@ def _resolve_dataset_ids(
     return dataset_ids
 
 
+def _find_dataset_manifest(embeddings_root: Path, dataset_id: str) -> Path | None:
+    direct = embeddings_root / dataset_id / "manifest.json"
+    if direct.exists():
+        return direct
+    matches = sorted(p for p in embeddings_root.rglob("manifest.json") if p.parent.name == dataset_id)
+    if not matches:
+        return None
+    if len(matches) > 1:
+        joined = ", ".join(str(path) for path in matches)
+        raise FileNotFoundError(
+            f"Ambiguous dataset manifest for {dataset_id} under {embeddings_root}. Matches: {joined}"
+        )
+    return matches[0]
+
+
+def _resolve_storage_path(
+    manifest: dict[str, Any],
+    *,
+    storage_format: str,
+    manifest_path: Path,
+    selected_root: Path,
+    dataset_id: str,
+) -> Path:
+    candidates: list[Path] = []
+    if storage_format == "lmdb":
+        raw = str(manifest.get("dataset_lmdb_path") or "").strip()
+        if raw:
+            candidates.append(Path(raw))
+        candidates.append(manifest_path.parent / "embeddings.lmdb")
+        candidates.append(selected_root / dataset_id / "embeddings.lmdb")
+    else:
+        raw = str(manifest.get("embeddings_path") or "").strip()
+        if raw:
+            candidates.append(Path(raw))
+        candidates.append(manifest_path.parent / "embeddings.jsonl.gz")
+        candidates.append(selected_root / dataset_id / "embeddings.jsonl.gz")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    joined = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"Missing dataset embeddings file for {dataset_id}. Tried: {joined}")
+
+
 def _load_dataset_manifests(embeddings_roots: list[Path], dataset_ids: list[str]) -> list[dict[str, Any]]:
     manifests: list[dict[str, Any]] = []
     for dataset_id in dataset_ids:
         manifest_path = None
         selected_root = None
         for embeddings_root in embeddings_roots:
-            candidate = embeddings_root / dataset_id / "manifest.json"
-            if candidate.exists():
+            candidate = _find_dataset_manifest(embeddings_root, dataset_id)
+            if candidate is not None and candidate.exists():
                 manifest_path = candidate
                 selected_root = embeddings_root
                 break
         if manifest_path is None or selected_root is None:
-            searched = ", ".join(str(root / dataset_id / "manifest.json") for root in embeddings_roots)
+            searched = ", ".join(str(root) for root in embeddings_roots)
             raise FileNotFoundError(f"Missing dataset manifest for {dataset_id}. Searched: {searched}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         storage_format = str(manifest.get("storage_format") or "jsonl.gz").strip().lower()
-        if storage_format == "lmdb":
-            storage_path = Path(manifest.get("dataset_lmdb_path") or selected_root / dataset_id / "embeddings.lmdb")
-        else:
-            storage_path = Path(manifest.get("embeddings_path") or selected_root / dataset_id / "embeddings.jsonl.gz")
-        if not storage_path.exists():
-            raise FileNotFoundError(f"Missing dataset embeddings file: {storage_path}")
+        storage_path = _resolve_storage_path(
+            manifest,
+            storage_format=storage_format,
+            manifest_path=manifest_path,
+            selected_root=selected_root,
+            dataset_id=dataset_id,
+        )
         manifest["storage_format"] = storage_format
         manifest["storage_path"] = str(storage_path.resolve())
         manifest["manifest_path"] = str(manifest_path.resolve())
@@ -546,6 +641,63 @@ def run_single_configuration(
     existing_eval_runs = _existing_eval_run_files(run_dir)
     resume_eval_only = bool(upload_checkpoint or existing_eval_runs)
     resume_reason = ""
+    resume_validation_note = ""
+    stale_resume_artifacts = False
+
+    if resume_eval_only:
+        live_claim_count = _current_claim_total_count()
+        expected_uploaded_records = None
+        if upload_checkpoint is not None:
+            expected_uploaded_records = int(
+                ((upload_checkpoint.get("upload") or {}).get("total_uploaded_records") or 0)
+            )
+
+        if live_claim_count == 0:
+            resume_validation_note = (
+                "Found prior upload/eval artifacts, but the live Claim collection is empty. "
+                "Falling back to full reset + upload."
+            )
+            print(f"[phase2] {resume_validation_note}")
+            resume_eval_only = False
+            stale_resume_artifacts = True
+        elif (
+            live_claim_count is not None
+            and expected_uploaded_records is not None
+            and expected_uploaded_records > 0
+            and live_claim_count != expected_uploaded_records
+        ):
+            resume_validation_note = (
+                "Found prior upload checkpoint, but live Claim object count "
+                f"({live_claim_count}) does not match expected uploaded record count "
+                f"({expected_uploaded_records}). Falling back to full reset + upload."
+            )
+            print(f"[phase2] {resume_validation_note}")
+            resume_eval_only = False
+            stale_resume_artifacts = True
+
+    if stale_resume_artifacts:
+        upload_checkpoint = None
+        existing_eval_runs = []
+        if upload_checkpoint_path.exists():
+            try:
+                upload_checkpoint_path.unlink()
+                print(f"[phase2] Removed stale upload checkpoint: {upload_checkpoint_path}")
+            except Exception as exc:
+                print(f"[warn] Failed to remove stale upload checkpoint {upload_checkpoint_path}: {exc}")
+        stale_eval_dir = run_dir / "eval_suite"
+        stale_eval_log = run_dir / "eval_suite.log"
+        if stale_eval_dir.exists():
+            try:
+                shutil.rmtree(stale_eval_dir, ignore_errors=True)
+                print(f"[phase2] Removed stale eval directory: {stale_eval_dir}")
+            except Exception as exc:
+                print(f"[warn] Failed to remove stale eval directory {stale_eval_dir}: {exc}")
+        if stale_eval_log.exists():
+            try:
+                stale_eval_log.unlink()
+                print(f"[phase2] Removed stale eval log: {stale_eval_log}")
+            except Exception as exc:
+                print(f"[warn] Failed to remove stale eval log {stale_eval_log}: {exc}")
 
     if resume_eval_only:
         if upload_checkpoint is not None:
@@ -650,6 +802,37 @@ def run_single_configuration(
             },
         )
 
+        client_claim_count = _current_claim_total_count()
+        graphql_claim_count, graphql_endpoint = _graphql_claim_total_count()
+        expected_uploaded_records = int((upload_stats or {}).get("total_uploaded_records") or 0)
+        print(
+            f"[phase2] Post-upload counts: client_claim_count={client_claim_count} "
+            f"graphql_claim_count={graphql_claim_count} graphql={graphql_endpoint}"
+        )
+        if expected_uploaded_records > 0:
+            if client_claim_count == 0:
+                raise RuntimeError(
+                    "Upload completed without surfacing an insert error, but the live Weaviate client sees zero Claim objects. "
+                    "This points to a failed or misdirected upload."
+                )
+            if graphql_claim_count == 0:
+                raise RuntimeError(
+                    "Upload completed, but the GraphQL endpoint used by eval sees zero Claim objects. "
+                    "Upload and eval are likely targeting different Weaviate endpoints. "
+                    f"GraphQL endpoint: {graphql_endpoint}"
+                )
+            if (
+                client_claim_count is not None
+                and graphql_claim_count is not None
+                and client_claim_count != graphql_claim_count
+            ):
+                raise RuntimeError(
+                    "Upload completed, but Weaviate client count and GraphQL count do not match. "
+                    "Upload and eval may be targeting different endpoints. "
+                    f"client_claim_count={client_claim_count} graphql_claim_count={graphql_claim_count} "
+                    f"graphql={graphql_endpoint}"
+                )
+
     print(f"[phase2] Starting eval for run {run_id}")
     eval_start = time.perf_counter()
     eval_output_dir, summary_rows, eval_log_path = run_eval_suite(
@@ -713,9 +896,10 @@ def run_single_configuration(
             "upload_checkpoint_path": str(upload_checkpoint_path.resolve()) if upload_checkpoint_path.exists() else "",
             "existing_eval_run_files": [p.name for p in existing_eval_runs],
             "note": (
-                "Eval resumed from existing Weaviate state and prior .run files."
+                (resume_validation_note + " " if resume_validation_note else "")
+                + "Eval resumed from existing Weaviate state and prior .run files."
                 if resume_eval_only
-                else ""
+                else resume_validation_note
             ),
         },
         "reset_behavior": {

@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import time
 import uuid
 import hashlib
 from pathlib import Path
@@ -22,6 +23,7 @@ import lmdb
 import numpy as np
 import weaviate
 from weaviate.config import AdditionalConfig, Timeout
+from weaviate.collections.classes.filters import Filter
 from weaviate.collections.classes.data import DataObject
 from weaviate.classes.config import Property, DataType, Configure
 from weaviate.classes.init import Auth
@@ -121,6 +123,13 @@ WEAVIATE_API_KEY = os.environ.get("WEAVIATE_API_KEY", "").strip()
 WEAVIATE_TIMEOUT_INIT = float(os.environ.get("WEAVIATE_TIMEOUT_INIT", "10"))
 WEAVIATE_TIMEOUT_QUERY = float(os.environ.get("WEAVIATE_TIMEOUT_QUERY", "60"))
 WEAVIATE_TIMEOUT_INSERT = float(os.environ.get("WEAVIATE_TIMEOUT_INSERT", "300"))
+WEAVIATE_INSERT_MAX_ATTEMPTS = int(os.environ.get("WEAVIATE_INSERT_MAX_ATTEMPTS", "6"))
+WEAVIATE_INSERT_BACKOFF_BASE_SECONDS = float(
+    os.environ.get("WEAVIATE_INSERT_BACKOFF_BASE_SECONDS", "5")
+)
+WEAVIATE_INSERT_BACKOFF_MAX_SECONDS = float(
+    os.environ.get("WEAVIATE_INSERT_BACKOFF_MAX_SECONDS", "120")
+)
 _WEAVIATE_CLIENT_DEBUG_PRINTED = False
 
 LMDB_VARIANT_PATHS = {
@@ -363,7 +372,7 @@ def write_dataset_embeddings_batch(
     *,
     canonical_dataset_id: str | None = None,
 ) -> dict[str, Any]:
-    rows: list[tuple[str, bytes]] = []
+    rows_by_key: dict[str, bytes] = {}
     fieldnames: set[str] = set()
     vector_names: set[str] = set()
     doc_ids: set[str] = set()
@@ -374,13 +383,14 @@ def write_dataset_embeddings_batch(
             canonical_dataset_id=canonical_dataset_id,
         )
         key = _dataset_embedding_storage_key(prepared)
-        rows.append((key, _serialize_dataset_embedding_record(prepared)))
+        rows_by_key[key] = _serialize_dataset_embedding_record(prepared)
         doc_id = str(prepared.get("doc_id") or "").strip()
         if doc_id:
             doc_ids.add(doc_id)
         fieldnames.update(prepared.keys())
         vector_names.update((prepared.get("weaviate_named_vectors") or {"colbert": None}).keys())
 
+    rows = list(rows_by_key.items())
     _write_lmdb_bytes(lmdb_env, rows)
     return {
         "record_count": len(rows),
@@ -819,28 +829,164 @@ def _format_batch_errors(errors: Any, *, limit: int = 3) -> str:
     return preview
 
 
-def _insert_many_with_retry(collection, objects: list[DataObject], *, kind: str) -> None:
+def _insert_backoff_seconds(attempt: int) -> float:
+    base = max(0.0, WEAVIATE_INSERT_BACKOFF_BASE_SECONDS)
+    cap = max(base, WEAVIATE_INSERT_BACKOFF_MAX_SECONDS)
+    return min(cap, base * (2 ** max(0, int(attempt) - 1)))
+
+
+def _is_transient_insert_error(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    transient_markers = (
+        "deadline exceeded",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "unavailable",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "broken pipe",
+        "eof",
+        "server disconnected",
+        "resource exhausted",
+        "transport is closing",
+        "read-only due to",
+        "try again later",
+        "too many requests",
+        "429",
+        "503",
+        "504",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def _failed_objects_from_errors(objects: list[DataObject], errors: Any) -> list[DataObject]:
+    if isinstance(errors, dict):
+        failed: list[DataObject] = []
+        for key in errors:
+            try:
+                idx = int(key)
+            except Exception:
+                continue
+            if 0 <= idx < len(objects):
+                failed.append(objects[idx])
+        if failed:
+            return failed
+    return list(objects)
+
+
+def _retry_insert_or_split(
+    collection,
+    objects: list[DataObject],
+    *,
+    kind: str,
+    attempt: int,
+    message: str,
+    source: str,
+) -> bool:
+    lower = str(message or "").strip().lower()
+    if not _is_transient_insert_error(lower):
+        return False
+    if "deadline exceeded" in lower and len(objects) > 1:
+        sleep_s = _insert_backoff_seconds(attempt)
+        print(
+            f"[retry] {kind} {source} on batch size {len(objects)} "
+            f"attempt={attempt}/{WEAVIATE_INSERT_MAX_ATTEMPTS}; "
+            f"sleeping {sleep_s:.1f}s before split"
+        )
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+        midpoint = max(1, len(objects) // 2)
+        print(
+            f"[retry] {kind} batch of {len(objects)} hit gRPC deadline; "
+            f"retrying as {midpoint}+{len(objects) - midpoint}"
+        )
+        _insert_many_with_retry(collection, objects[:midpoint], kind=kind, attempt=1)
+        _insert_many_with_retry(collection, objects[midpoint:], kind=kind, attempt=1)
+        return True
+    if attempt >= WEAVIATE_INSERT_MAX_ATTEMPTS:
+        return False
+    sleep_s = _insert_backoff_seconds(attempt)
+    print(
+        f"[retry] {kind} {source} on batch size {len(objects)} "
+        f"attempt={attempt}/{WEAVIATE_INSERT_MAX_ATTEMPTS}; retrying in {sleep_s:.1f}s"
+    )
+    if sleep_s > 0:
+        time.sleep(sleep_s)
+    _insert_many_with_retry(collection, objects, kind=kind, attempt=attempt + 1)
+    return True
+
+
+def _insert_many_with_retry(collection, objects: list[DataObject], *, kind: str, attempt: int = 1) -> None:
+    if not objects:
+        return
     try:
         result = collection.data.insert_many(objects)
     except WeaviateBatchError as exc:
-        message = str(exc).lower()
-        if "deadline exceeded" in message and len(objects) > 1:
-            midpoint = max(1, len(objects) // 2)
-            print(
-                f"[retry] {kind} batch of {len(objects)} hit gRPC deadline; "
-                f"retrying as {midpoint}+{len(objects) - midpoint}"
-            )
-            _insert_many_with_retry(collection, objects[:midpoint], kind=kind)
-            _insert_many_with_retry(collection, objects[midpoint:], kind=kind)
+        message = str(exc)
+        if _retry_insert_or_split(
+            collection,
+            objects,
+            kind=kind,
+            attempt=attempt,
+            message=message,
+            source="exception",
+        ):
+            return
+        raise
+    except Exception as exc:
+        message = str(exc)
+        if _retry_insert_or_split(
+            collection,
+            objects,
+            kind=kind,
+            attempt=attempt,
+            message=message,
+            source="exception",
+        ):
             return
         raise
 
     if getattr(result, "has_errors", False):
-        error_text = _format_batch_errors(getattr(result, "errors", None))
+        errors = getattr(result, "errors", None)
+        error_text = _format_batch_errors(errors)
+        failed_objects = _failed_objects_from_errors(objects, errors)
+        if failed_objects and _retry_insert_or_split(
+            collection,
+            failed_objects,
+            kind=kind,
+            attempt=attempt,
+            message=error_text,
+            source="partial batch error",
+        ):
+            return
         raise RuntimeError(
             f"{kind} insert_many had {len(getattr(result, 'errors', []) or [])} error(s) "
             f"for batch size {len(objects)}. {error_text}"
         )
+
+
+def _fetch_existing_uuids(collection, uuids: list[str], *, chunk_size: int) -> set[str]:
+    pending = [str(value).strip() for value in uuids if str(value).strip()]
+    if not pending:
+        return set()
+    found: set[str] = set()
+    chunk = max(1, int(chunk_size))
+    for start in range(0, len(pending), chunk):
+        subset = pending[start:start + chunk]
+        response = collection.query.fetch_objects(
+            limit=len(subset),
+            filters=Filter.by_id().contains_any(subset),
+            return_properties=False,
+        )
+        for obj in getattr(response, "objects", []) or []:
+            oid = str(getattr(obj, "uuid", "") or "").strip()
+            if oid:
+                found.add(oid)
+    return found
 
 
 def _resolved_muvera_params(overrides: dict | None = None) -> dict[str, int | None]:
@@ -1091,6 +1237,7 @@ def store_embeddings(
     muvera_params: dict | None = None,
     pq_params: dict | None = None,
     write_lmdb: bool | None = None,
+    skip_existing: bool = False,
 ):
     client = get_client()
     lmdb_envs_by_path: dict[Path, lmdb.Environment] = {}
@@ -1129,6 +1276,10 @@ def store_embeddings(
 
         prepared_embeddings = [prepare_embedding_record_for_storage(emb) for emb in embeddings]
         write_lmdb_enabled = WRITE_LMDB if write_lmdb is None else bool(write_lmdb)
+        claims_inserted_total = 0
+        claims_skipped_existing_total = 0
+        patents_inserted_total = 0
+        patents_skipped_existing_total = 0
 
         print(f"Uploading {len(prepared_embeddings)} claim embeddings...")
         written_doc_ids: set[str] = set()
@@ -1143,36 +1294,63 @@ def store_embeddings(
             patent_uuid_by_doc[doc_id] = _patent_uuid_for_record(emb)
 
         if patent_by_doc:
+            existing_patent_uuids: set[str] = set()
+            if skip_existing:
+                existing_patent_uuids = _fetch_existing_uuids(
+                    patent_collection,
+                    list(patent_uuid_by_doc.values()),
+                    chunk_size=WEAVIATE_BATCH_SIZE,
+                )
             patent_objects = [
                 DataObject(
                     properties=props,
                     uuid=patent_uuid_by_doc.get(str(props.get("doc_id", "")).strip(), _stable_uuid("patent", str(props.get("doc_id", "")))),
                 )
                 for props in patent_by_doc.values()
+                if patent_uuid_by_doc.get(str(props.get("doc_id", "")).strip(), _stable_uuid("patent", str(props.get("doc_id", "")))) not in existing_patent_uuids
             ]
-            _insert_many_with_retry(patent_collection, patent_objects, kind="patent")
+            patents_skipped_existing_total += len(existing_patent_uuids)
+            if patent_objects:
+                _insert_many_with_retry(patent_collection, patent_objects, kind="patent")
+                patents_inserted_total += len(patent_objects)
 
         for start in range(0, len(prepared_embeddings), WEAVIATE_BATCH_SIZE):
             batch = prepared_embeddings[start:start + WEAVIATE_BATCH_SIZE]
+            existing_claim_uuids: set[str] = set()
+            batch_claim_uuids = [_claim_uuid_for_record(emb) for emb in batch]
+            if skip_existing:
+                existing_claim_uuids = _fetch_existing_uuids(
+                    claim_collection,
+                    batch_claim_uuids,
+                    chunk_size=WEAVIATE_BATCH_SIZE,
+                )
             objects = []
+            filtered_batch: list[dict] = []
             for emb in batch:
                 claim_identity = _claim_identity(emb)
                 props = emb.get("weaviate_claim_properties") or _build_claim_properties(emb)
                 vecs = _named_vectors_for_record(emb)
+                claim_uuid = _claim_uuid_for_record(emb)
+                if claim_uuid in existing_claim_uuids:
+                    continue
                 objects.append(
                     DataObject(
                         properties=props,
                         vector=vecs,
-                        uuid=_claim_uuid_for_record(emb),
+                        uuid=claim_uuid,
                     )
                 )
+                filtered_batch.append(emb)
 
-            _insert_many_with_retry(claim_collection, objects, kind="claim")
+            claims_skipped_existing_total += len(existing_claim_uuids)
+            if objects:
+                _insert_many_with_retry(claim_collection, objects, kind="claim")
+                claims_inserted_total += len(objects)
 
             lmdb_rows_by_path: dict[Path, list[tuple[str, list]]] = {}
             patent_metadata_rows: list[tuple[str, dict]] = []
             claim_payload_rows: list[tuple[str, dict]] = []
-            for emb in batch:
+            for emb in filtered_batch:
                 claim_key = _claim_identity(emb)
                 doc_id = str(emb.get("doc_id") or "").strip()
                 dataset_shard = emb.get("dataset_shard")
@@ -1261,7 +1439,21 @@ def store_embeddings(
                             lmdb_envs_by_path[lmdb_path] = env
                         _write_lmdb_vectors(env, rows)
 
-        print(f"Uploaded {len(prepared_embeddings)} claims to database.")
+        print(
+            f"Uploaded {claims_inserted_total} claims to database."
+            + (
+                f" Skipped {claims_skipped_existing_total} existing claims and "
+                f"{patents_skipped_existing_total} existing patents."
+                if skip_existing and (claims_skipped_existing_total or patents_skipped_existing_total)
+                else ""
+            )
+        )
+        return {
+            "claims_inserted": claims_inserted_total,
+            "claims_skipped_existing": claims_skipped_existing_total,
+            "patents_inserted": patents_inserted_total,
+            "patents_skipped_existing": patents_skipped_existing_total,
+        }
     finally:
         for env in lmdb_envs_by_path.values():
             env.close()

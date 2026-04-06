@@ -68,6 +68,7 @@ _DEFAULT_WEAVIATE_HTTP_BASE = f"{_DEFAULT_HTTP_SCHEME}://{_DEFAULT_HTTP_HOST}:{_
 
 WEAVIATE_GRAPHQL = os.environ.get("WEAVIATE_GRAPHQL", f"{_DEFAULT_WEAVIATE_HTTP_BASE}/v1/graphql")
 WEAVIATE_OBJECTS = os.environ.get("WEAVIATE_OBJECTS", f"{_DEFAULT_WEAVIATE_HTTP_BASE}/v1/objects")
+_WEAVIATE_HTTP_ENDPOINTS_PRINTED = False
 
 
 SHARD_TO_PATH = {
@@ -151,6 +152,10 @@ class ClaimHit:
 
 
 def _post_graphql(query: str) -> dict:
+    global _WEAVIATE_HTTP_ENDPOINTS_PRINTED
+    if not _WEAVIATE_HTTP_ENDPOINTS_PRINTED:
+        print(f"[weaviate-http] graphql={WEAVIATE_GRAPHQL} objects={WEAVIATE_OBJECTS}")
+        _WEAVIATE_HTTP_ENDPOINTS_PRINTED = True
     last_exc: Exception | None = None
     for attempt in range(WEAVIATE_HTTP_RETRIES + 1):
         try:
