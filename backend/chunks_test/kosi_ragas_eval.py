@@ -99,7 +99,7 @@ def load_questions(csv_path: str, question_col: str) -> list[str]:
 
 
 if __name__ == "__main__":
-    CSV_PATH = "./validation/test_validation.txt"
+    CSV_PATH = "./validation/regular_validation.txt"
     QUESTION_COL = "Question"
 
     results = None
