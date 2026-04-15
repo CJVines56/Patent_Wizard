@@ -699,6 +699,24 @@ def load_patent_metadata_batch_from_lmdb(doc_ids: list[str]) -> dict[str, dict]:
         env.close()
 
 
+def iter_patent_metadata_from_lmdb():
+    path = Path(LMDB_PATH_PATENT_METADATA)
+    if not path.exists():
+        return
+    env = _open_lmdb_env(path, readonly=True)
+    try:
+        with env.begin(write=False) as txn:
+            cursor = txn.cursor()
+            for _, payload in cursor:
+                if payload is None:
+                    continue
+                record = _deserialize_json_record(payload)
+                if isinstance(record, dict) and record:
+                    yield record
+    finally:
+        env.close()
+
+
 def load_claim_payload_from_lmdb(claim_id: str) -> dict | None:
     if not claim_id:
         return None

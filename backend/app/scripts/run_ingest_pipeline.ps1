@@ -1,6 +1,10 @@
 param(
     [string]$StartDate = "2025-09-01",
     [int]$WeeksBack = 7,
+    [string]$IngestDates = "",
+    [int]$MaxPatents = 0,
+    [string]$TargetDocIds = "",
+    [string]$TargetDocIdsFile = "",
     [switch]$ResetWeaviate,
     [switch]$DropFirst,
     [switch]$CleanOutputs,
@@ -67,16 +71,19 @@ try {
 
     $env:INGEST_MODE = "real-store"
     $env:DROP_FIRST = $(if ($DropFirst) { "1" } else { "0" })
-    $env:INGEST_DATES = ""
+    $env:INGEST_DATES = $IngestDates
     $env:INGEST_START_DATE = $StartDate
     $env:INGEST_WEEKS_BACK = [string][Math]::Max(0, $WeeksBack)
+    $env:INGEST_MAX_PATENTS = if ($MaxPatents -gt 0) { [string]$MaxPatents } else { "" }
+    $env:INGEST_TARGET_DOC_IDS = $TargetDocIds
+    $env:INGEST_TARGET_DOC_IDS_FILE = $TargetDocIdsFile
 
     $env:TOKEN_VECTOR_DIM = "128"
     $env:TOKEN_VECTOR_DTYPE = "float16"
     $env:PROJECTION_MODE = "trained"
     # Must point to trained [128,768] (or [768,128]) projection checkpoint.
     if (-not $env:PROJECTION_PATH) {
-        throw "PROJECTION_PATH must be set to trained projection weights before ingest."
+        $env:PROJECTION_PATH = "backend/app/checkpoints/colbertv2_prototype_128x768.pt"
     }
     $env:COLBERT_VARIANTS = "128_f16,128_f32"
     $env:LMDB_WRITE_VARIANTS = "128_f16"
@@ -87,7 +94,16 @@ try {
     $env:INGEST_CHECKPOINT_PATH = $CheckpointPath
 
     Write-Host "[run] Repo root: $RepoRoot"
-    Write-Host "[run] StartDate=$StartDate WeeksBack=$WeeksBack DropFirst=$($env:DROP_FIRST)"
+    Write-Host "[run] StartDate=$StartDate WeeksBack=$WeeksBack MaxPatents=$($env:INGEST_MAX_PATENTS) DropFirst=$($env:DROP_FIRST)"
+    if ($env:INGEST_DATES) {
+        Write-Host "[run] IngestDates=$($env:INGEST_DATES)"
+    }
+    if ($env:INGEST_TARGET_DOC_IDS) {
+        Write-Host "[run] TargetDocIds=$($env:INGEST_TARGET_DOC_IDS)"
+    }
+    if ($env:INGEST_TARGET_DOC_IDS_FILE) {
+        Write-Host "[run] TargetDocIdsFile=$($env:INGEST_TARGET_DOC_IDS_FILE)"
+    }
     Write-Host "[run] Manifest=$ManifestPath"
     Write-Host "[run] Checkpoint=$CheckpointPath"
 

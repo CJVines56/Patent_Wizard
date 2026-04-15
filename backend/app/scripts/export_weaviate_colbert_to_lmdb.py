@@ -22,7 +22,7 @@ from backend.app.store import (
 from backend.app.vector_config import WEAVIATE_NAMED_VECTOR, assert_128_variant
 
 
-WEAVIATE_OBJECTS = os.environ.get("WEAVIATE_OBJECTS", "http://localhost:8080/v1/objects").rstrip("/")
+WEAVIATE_OBJECTS = os.environ.get("WEAVIATE_OBJECTS", "http://localhost:8081/v1/objects").rstrip("/")
 WEAVIATE_API_KEY = os.environ.get("WEAVIATE_API_KEY", "").strip()
 
 

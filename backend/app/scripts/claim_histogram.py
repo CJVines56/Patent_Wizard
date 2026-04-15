@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import requests
 
 
-WEAVIATE_URL = "http://localhost:8080/v1/objects"
+WEAVIATE_URL = "http://localhost:8081/v1/objects"
 OUT_PATH = Path(__file__).resolve().parents[2] / "validation" / "claims_per_patent_hist.png"
 OUTLIERS_PATH = Path(__file__).resolve().parents[2] / "validation" / "claims_per_patent_outliers.csv"
 

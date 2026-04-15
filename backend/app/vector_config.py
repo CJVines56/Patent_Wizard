@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+
+from backend.app.env_bootstrap import coerce_path_string, load_project_env
+
+
+load_project_env()
 
 
 ALLOWED_TOKEN_DTYPES = {"float16", "float32"}
@@ -52,7 +56,11 @@ if not PROJECTION_PATH_RAW:
         "PROJECTION_PATH is required and must point to trained projection weights on disk."
     )
 
-PROJECTION_PATH = Path(PROJECTION_PATH_RAW).expanduser().resolve()
+PROJECTION_PATH = coerce_path_string(PROJECTION_PATH_RAW)
+if PROJECTION_PATH is None:
+    raise ValueError(
+        "PROJECTION_PATH is required and must point to trained projection weights on disk."
+    )
 if not PROJECTION_PATH.exists():
     raise FileNotFoundError(
         f"PROJECTION_PATH does not exist: {PROJECTION_PATH}. "
@@ -98,4 +106,3 @@ def assert_128_variant(variant: str, *, context: str = "") -> str:
             + f". Allowed: {sorted(ALLOWED_VARIANTS)}."
         )
     return v
-

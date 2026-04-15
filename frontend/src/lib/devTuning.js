@@ -6,7 +6,7 @@ export const DEFAULT_TUNING = Object.freeze({
   rerank_k: 200,
 });
 
-export const DEV_TUNING_VISIBLE = import.meta.env.VITE_ENABLE_SEARCH_KNOBS !== "false";
+export const DEV_TUNING_VISIBLE = false;
 
 const STORAGE_KEY = "patent_miner_dev_tuning_v2";
 

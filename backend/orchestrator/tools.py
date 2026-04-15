@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -10,6 +11,7 @@ from backend.app.services.download import rich_to_plain
 from backend.app.store import (
     LMDB_PATH_128_F16,
     LMDB_PATH_128_F32,
+    iter_patent_metadata_from_lmdb,
     load_claim_payloads_from_lmdb,
     load_colbert_from_lmdb,
     load_patent_metadata_batch_from_lmdb,
@@ -46,6 +48,20 @@ FORCE_CLIENT_HYBRID = os.environ.get("FORCE_CLIENT_HYBRID", "1").strip() not in 
     "False",
     "no",
     "NO",
+}
+SEARCH_SCOPE_CLAIM = "claim"
+SEARCH_SCOPE_PATENT = "patent"
+PATENT_SCOPE_CANDIDATE_LIMIT_CAP = int(os.environ.get("PATENT_SCOPE_CANDIDATE_LIMIT_CAP", "5000"))
+PATENT_SCOPE_RERANK_K_CAP = int(os.environ.get("PATENT_SCOPE_RERANK_K_CAP", "5000"))
+CLAIM_PREFILTER_DOC_ID_BATCH_SIZE = int(os.environ.get("CLAIM_PREFILTER_DOC_ID_BATCH_SIZE", "200"))
+CLAIM_PREFILTER_FIELDS = {"claim_type"}
+PATENT_PREFILTER_FIELDS = {
+    "authors",
+    "classification",
+    "doc_id",
+    "filing_date",
+    "kind",
+    "title",
 }
 
 SHARD_TO_PATH = {
@@ -136,16 +152,273 @@ def _extract_doc_id_filters(where_filter: Optional[Dict[str, Any]]) -> List[str]
     return dedup
 
 
-def _build_claim_where(doc_ids: List[str]) -> str:
-    if not doc_ids:
+def _batched(items: List[str], size: int):
+    batch_size = max(1, int(size))
+    for idx in range(0, len(items), batch_size):
+        yield items[idx: idx + batch_size]
+
+
+def _combine_where_nodes(operator: str, nodes: List[str]) -> str:
+    cleaned = [node for node in nodes if node]
+    if not cleaned:
         return ""
-    operands = []
-    for doc_id in doc_ids:
-        pattern = f"*{doc_id}*"
-        operands.append(
-            "{path:[\"doc_id\"],operator:Like,valueText:%s}" % _escape_text(pattern)
+    if len(cleaned) == 1:
+        return cleaned[0]
+    return "{operator:%s,operands:[%s]}" % (operator, ",".join(cleaned))
+
+
+def _build_doc_id_where_node(doc_ids: Optional[List[str]]) -> str:
+    ids = [str(doc_id).strip() for doc_id in (doc_ids or []) if str(doc_id).strip()]
+    if not ids:
+        return ""
+    return _combine_where_nodes(
+        "Or",
+        [
+            "{path:[\"doc_id\"],operator:Equal,valueText:%s}" % _escape_text(doc_id)
+            for doc_id in ids
+        ],
+    )
+
+
+def _claim_filter_to_where_node(where_filter: Optional[Dict[str, Any]]) -> str:
+    if not where_filter:
+        return ""
+    if "$and" in where_filter:
+        return _combine_where_nodes(
+            "And",
+            [_claim_filter_to_where_node(child) for child in where_filter.get("$and") or []],
         )
-    return "where:{operator:Or,operands:[%s]}," % ",".join(operands)
+    if "$or" in where_filter:
+        return _combine_where_nodes(
+            "Or",
+            [_claim_filter_to_where_node(child) for child in where_filter.get("$or") or []],
+        )
+
+    nodes: List[str] = []
+    for field, condition in where_filter.items():
+        if field != "claim_type":
+            continue
+        if isinstance(condition, dict):
+            expected = condition.get("$eq")
+        else:
+            expected = condition
+        value = _normalize_text_filter_value(expected)
+        if not value:
+            continue
+        nodes.append(
+            "{path:[\"claim_type\"],operator:Equal,valueText:%s}" % _escape_text(value)
+        )
+    return _combine_where_nodes("And", nodes)
+
+
+def _build_claim_where(
+    doc_ids: Optional[List[str]] = None,
+    claim_where_filter: Optional[Dict[str, Any]] = None,
+) -> str:
+    combined = _combine_where_nodes(
+        "And",
+        [
+            _build_doc_id_where_node(doc_ids),
+            _claim_filter_to_where_node(claim_where_filter),
+        ],
+    )
+    if not combined:
+        return ""
+    return f"where:{combined},"
+
+
+def _combine_filter_nodes(operator: str, children: List[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    cleaned = [child for child in children if child]
+    if not cleaned:
+        return None
+    if len(cleaned) == 1:
+        return cleaned[0]
+    return {operator: cleaned}
+
+
+def _split_prefilter_scopes(
+    where_filter: Optional[Dict[str, Any]],
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    if not where_filter or not isinstance(where_filter, dict):
+        return None, None, None
+
+    if "$and" in where_filter:
+        patent_nodes: List[Optional[Dict[str, Any]]] = []
+        claim_nodes: List[Optional[Dict[str, Any]]] = []
+        residual_nodes: List[Optional[Dict[str, Any]]] = []
+        for child in where_filter.get("$and") or []:
+            patent_node, claim_node, residual_node = _split_prefilter_scopes(child)
+            patent_nodes.append(patent_node)
+            claim_nodes.append(claim_node)
+            residual_nodes.append(residual_node)
+        return (
+            _combine_filter_nodes("$and", patent_nodes),
+            _combine_filter_nodes("$and", claim_nodes),
+            _combine_filter_nodes("$and", residual_nodes),
+        )
+
+    if "$or" in where_filter:
+        child_splits = [_split_prefilter_scopes(child) for child in where_filter.get("$or") or []]
+        if child_splits and all(patent and not claim and not residual for patent, claim, residual in child_splits):
+            return (
+                _combine_filter_nodes("$or", [patent for patent, _, _ in child_splits]),
+                None,
+                None,
+            )
+        if child_splits and all(claim and not patent and not residual for patent, claim, residual in child_splits):
+            return (
+                None,
+                _combine_filter_nodes("$or", [claim for _, claim, _ in child_splits]),
+                None,
+            )
+        return None, None, where_filter
+
+    patent_node: Dict[str, Any] = {}
+    claim_node: Dict[str, Any] = {}
+    residual_node: Dict[str, Any] = {}
+    for field, condition in where_filter.items():
+        if field in PATENT_PREFILTER_FIELDS:
+            patent_node[field] = condition
+        elif field in CLAIM_PREFILTER_FIELDS:
+            claim_node[field] = condition
+        else:
+            residual_node[field] = condition
+    return (
+        patent_node or None,
+        claim_node or None,
+        residual_node or None,
+    )
+
+
+def _normalize_text_filter_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_date_filter_value(value: Any) -> str:
+    raw = _normalize_text_filter_value(value)
+    if not raw:
+        return ""
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) >= 8:
+        return digits[:8]
+    return raw
+
+
+def _metadata_values_for_field(
+    field: str,
+    hit: Dict[str, Any],
+    claim_payload: Dict[str, Any],
+    patent_row: Dict[str, Any],
+) -> List[str]:
+    if field == "doc_id":
+        return [
+            _normalize_text_filter_value(
+                hit.get("doc_id") or claim_payload.get("doc_id") or patent_row.get("doc_id")
+            )
+        ]
+    if field == "claim_type":
+        return [
+            _normalize_text_filter_value(
+                hit.get("claim_type") or claim_payload.get("claim_type")
+            )
+        ]
+    if field == "classification":
+        return [_normalize_text_filter_value(patent_row.get("classification"))]
+    if field == "kind":
+        return [_normalize_text_filter_value(patent_row.get("kind"))]
+    if field == "filing_date":
+        return [_normalize_date_filter_value(patent_row.get("filing_date"))]
+    if field == "title":
+        return [_normalize_text_filter_value(patent_row.get("title"))]
+    if field == "authors":
+        authors = patent_row.get("authors") or []
+        if isinstance(authors, list):
+            return [_normalize_text_filter_value(author) for author in authors if _normalize_text_filter_value(author)]
+        return [_normalize_text_filter_value(authors)]
+    return []
+
+
+def _matches_single_condition(field: str, candidate: str, op: str, expected: Any, *, options: str = "") -> bool:
+    candidate = _normalize_date_filter_value(candidate) if field == "filing_date" else _normalize_text_filter_value(candidate)
+    expected_value = (
+        _normalize_date_filter_value(expected)
+        if field == "filing_date"
+        else _normalize_text_filter_value(expected)
+    )
+    if op == "$regex":
+        if not expected_value:
+            return True
+        flags = re.IGNORECASE if "i" in str(options) else 0
+        try:
+            return re.search(str(expected), candidate, flags) is not None
+        except re.error:
+            return expected_value.lower() in candidate.lower()
+    if op == "$contains":
+        if not expected_value:
+            return True
+        return expected_value.lower() in candidate.lower()
+    if op == "$eq":
+        return candidate.lower() == expected_value.lower()
+    if op in {"$gt", "$gte", "$lt", "$lte"}:
+        left = candidate
+        right = expected_value
+        if not left or not right:
+            return False
+        if op == "$gt":
+            return left > right
+        if op == "$gte":
+            return left >= right
+        if op == "$lt":
+            return left < right
+        return left <= right
+    return False
+
+
+def _matches_field_condition(field: str, values: List[str], condition: Any) -> bool:
+    cleaned = [value for value in values if _normalize_text_filter_value(value)]
+    if isinstance(condition, dict):
+        options = str(condition.get("$options", "") or "")
+        for op, expected in condition.items():
+            if op == "$options":
+                continue
+            if op in {"$gt", "$gte", "$lt", "$lte", "$eq", "$contains", "$regex"}:
+                if not any(
+                    _matches_single_condition(field, value, op, expected, options=options)
+                    for value in cleaned
+                ):
+                    return False
+        return True
+    if isinstance(condition, list):
+        return any(_matches_field_condition(field, cleaned, item) for item in condition)
+    return any(
+        _matches_single_condition(field, value, "$eq", condition)
+        for value in cleaned
+    )
+
+
+def _matches_where_filter(
+    where_filter: Optional[Dict[str, Any]],
+    hit: Dict[str, Any],
+    claim_payload: Dict[str, Any],
+    patent_row: Dict[str, Any],
+) -> bool:
+    if not where_filter:
+        return True
+    if "$and" in where_filter:
+        return all(
+            _matches_where_filter(child, hit, claim_payload, patent_row)
+            for child in where_filter.get("$and") or []
+        )
+    if "$or" in where_filter:
+        return any(
+            _matches_where_filter(child, hit, claim_payload, patent_row)
+            for child in where_filter.get("$or") or []
+        )
+    for field, condition in where_filter.items():
+        values = _metadata_values_for_field(field, hit, claim_payload, patent_row)
+        if not _matches_field_condition(field, values, condition):
+            return False
+    return True
 
 
 def _build_retrieval_clause(query: str, mode: str, hybrid_alpha: float, query_vector: List[List[float]]) -> str:
@@ -175,6 +448,18 @@ def _query_claim_rows(retrieval_clause: str, claim_where: str, limit: int) -> Li
         f"{retrieval_clause}"
         f"{claim_where} limit: {int(limit)}"
         ") { claim_id doc_id _additional { id distance } } } }"
+    )
+    data = _post_graphql(gql)
+    return data.get("Get", {}).get("Claim", []) or []
+
+
+def _query_claim_rows_unranked(claim_where: str, limit: int) -> List[Dict[str, Any]]:
+    if not claim_where:
+        return []
+    gql = (
+        "{ Get { Claim("
+        f"{claim_where} limit: {int(limit)}"
+        ") { claim_id doc_id _additional { id } } } }"
     )
     data = _post_graphql(gql)
     return data.get("Get", {}).get("Claim", []) or []
@@ -260,8 +545,51 @@ def _normalize_retrieval_mode(value: str | None) -> str:
     return mode
 
 
+def _resolve_positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return max(int(minimum), resolved)
+
+
+def _normalize_search_scope(value: str | None) -> str:
+    scope = str(value or SEARCH_SCOPE_CLAIM).strip().lower()
+    return SEARCH_SCOPE_PATENT if scope == SEARCH_SCOPE_PATENT else SEARCH_SCOPE_CLAIM
+
+
+def _patent_candidate_limit_default(result_limit: int) -> int:
+    return min(
+        PATENT_SCOPE_CANDIDATE_LIMIT_CAP,
+        max(DEFAULT_CANDIDATE_LIMIT * 2, int(result_limit) * 80),
+    )
+
+
+def _patent_rerank_k_default(result_limit: int) -> int:
+    return min(
+        PATENT_SCOPE_RERANK_K_CAP,
+        max(RERANK_K * 2, int(result_limit) * 40),
+    )
+
+
 def _fetch_patent_metadata(doc_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     return load_patent_metadata_batch_from_lmdb(doc_ids)
+
+
+def _prefilter_doc_ids_from_patent_metadata(where_filter: Optional[Dict[str, Any]]) -> Optional[List[str]]:
+    if not where_filter:
+        return None
+    doc_ids: List[str] = []
+    seen = set()
+    for patent_row in iter_patent_metadata_from_lmdb():
+        if not _matches_where_filter(where_filter, {}, {}, patent_row):
+            continue
+        doc_id = str(patent_row.get("doc_id") or "").strip()
+        if not doc_id or doc_id in seen:
+            continue
+        seen.add(doc_id)
+        doc_ids.append(doc_id)
+    return doc_ids
 
 
 def _maxsim_score(query_tokens: np.ndarray, doc_tokens: np.ndarray) -> float:
@@ -322,12 +650,88 @@ def _rerank_hits_with_lmdb(hits: List[Dict[str, Any]], query: str, shard: str, r
     return reranked
 
 
+def _collapse_hits_to_patents(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    collapsed: List[Dict[str, Any]] = []
+    seen_keys = set()
+    for hit in hits:
+        addl = hit.get("_additional") or {}
+        key = str(hit.get("doc_id") or hit.get("claim_id") or addl.get("id") or "").strip()
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        collapsed.append(hit)
+    return collapsed
+
+
+def _preferred_result_text(search_scope: str, patent_row: Dict[str, Any], fallback_text: str) -> str:
+    if search_scope == SEARCH_SCOPE_PATENT:
+        abstract_text = rich_to_plain(str(patent_row.get("abstract_text") or patent_row.get("abstract") or ""))
+        if abstract_text:
+            return abstract_text
+    return fallback_text
+
+
+def _retrieve_claim_rows(
+    query_text: str,
+    retrieval_clause: str,
+    claim_where: str,
+    query_vector: List[List[float]],
+    effective_mode: str,
+    effective_alpha: float,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    if effective_mode == "hybrid" and 0.0 < effective_alpha < 1.0 and FORCE_CLIENT_HYBRID:
+        return _retrieve_hybrid_client_fusion(
+            query_text,
+            claim_where,
+            query_vector,
+            effective_alpha,
+            int(limit),
+        )
+    try:
+        return _query_claim_rows(retrieval_clause, claim_where, int(limit))
+    except Exception as exc:
+        if effective_mode != "hybrid" or effective_alpha <= 0.0 or effective_alpha >= 1.0:
+            raise
+        print(f"[warn] server-side hybrid failed; using client-side fusion fallback: {exc}")
+        return _retrieve_hybrid_client_fusion(
+            query_text,
+            claim_where,
+            query_vector,
+            effective_alpha,
+            int(limit),
+        )
+
+
+def _retrieve_unranked_prefilter_hits(
+    prefiltered_doc_ids: List[str],
+    claim_prefilter: Optional[Dict[str, Any]],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    hits: List[Dict[str, Any]] = []
+    seen_hit_keys = set()
+    for doc_id_batch in _batched(prefiltered_doc_ids, CLAIM_PREFILTER_DOC_ID_BATCH_SIZE):
+        claim_where = _build_claim_where(doc_id_batch, claim_prefilter)
+        batch_hits = _query_claim_rows_unranked(claim_where, int(limit))
+        for hit in batch_hits:
+            hit_key = _claim_row_key(hit)
+            if not hit_key or hit_key in seen_hit_keys:
+                continue
+            seen_hit_keys.add(hit_key)
+            hits.append(hit)
+    return hits
+
+
 @tool(response_format="content")
 def retrieve_context(
     query: str,
     where_filter: Optional[Dict[str, Any]] = None,
     retrieval_mode: Optional[str] = None,
     hybrid_alpha: Optional[float] = None,
+    search_scope: Optional[str] = None,
+    result_limit: Optional[int] = None,
+    candidate_limit: Optional[int] = None,
+    rerank_k: Optional[int] = None,
 ):
     """Retrieve information to help answer a query, optionally using metadata filters.
 
@@ -340,36 +744,118 @@ def retrieve_context(
 
     query_text = query.strip()
     effective_mode = _normalize_retrieval_mode(retrieval_mode)
+    effective_search_scope = _normalize_search_scope(search_scope)
     effective_alpha = HYBRID_ALPHA if hybrid_alpha is None else max(0.0, min(1.0, float(hybrid_alpha)))
+    effective_limit = _resolve_positive_int(result_limit, DEFAULT_LIMIT, minimum=1)
+    candidate_default = (
+        _patent_candidate_limit_default(effective_limit)
+        if effective_search_scope == SEARCH_SCOPE_PATENT
+        else max(DEFAULT_CANDIDATE_LIMIT, effective_limit)
+    )
+    effective_candidate_limit = _resolve_positive_int(
+        candidate_limit,
+        candidate_default,
+        minimum=effective_limit,
+    )
+    rerank_default = (
+        _patent_rerank_k_default(effective_limit)
+        if effective_search_scope == SEARCH_SCOPE_PATENT
+        else max(RERANK_K, effective_limit)
+    )
+    effective_rerank_k = _resolve_positive_int(
+        rerank_k,
+        rerank_default,
+        minimum=effective_limit,
+    )
     query_vector = _embed_query_colbert(query_text) if effective_mode in {"vector", "hybrid"} else []
     retrieval_clause = _build_retrieval_clause(query_text, effective_mode, effective_alpha, query_vector)
-    doc_id_filters = _extract_doc_id_filters(where_filter)
-    claim_where = _build_claim_where(doc_id_filters)
-    if effective_mode == "hybrid" and 0.0 < effective_alpha < 1.0 and FORCE_CLIENT_HYBRID:
-        hits = _retrieve_hybrid_client_fusion(
-            query_text,
-            claim_where,
-            query_vector,
-            effective_alpha,
-            int(DEFAULT_CANDIDATE_LIMIT),
-        )
-    else:
-        try:
-            hits = _query_claim_rows(retrieval_clause, claim_where, int(DEFAULT_CANDIDATE_LIMIT))
-        except Exception as e:
-            if effective_mode != "hybrid" or effective_alpha <= 0.0 or effective_alpha >= 1.0:
-                raise
-            print(f"[warn] server-side hybrid failed; using client-side fusion fallback: {e}")
-            hits = _retrieve_hybrid_client_fusion(
+    patent_prefilter, claim_prefilter, _residual_filter = _split_prefilter_scopes(where_filter)
+    prefiltered_doc_ids = _prefilter_doc_ids_from_patent_metadata(patent_prefilter)
+    used_prefilter_batches = False
+
+    if patent_prefilter and prefiltered_doc_ids == []:
+        hits: List[Dict[str, Any]] = []
+    elif prefiltered_doc_ids and len(prefiltered_doc_ids) > CLAIM_PREFILTER_DOC_ID_BATCH_SIZE:
+        used_prefilter_batches = True
+        hits = []
+        seen_hit_keys = set()
+        for doc_id_batch in _batched(prefiltered_doc_ids, CLAIM_PREFILTER_DOC_ID_BATCH_SIZE):
+            claim_where = _build_claim_where(doc_id_batch, claim_prefilter)
+            batch_hits = _retrieve_claim_rows(
                 query_text,
+                retrieval_clause,
                 claim_where,
                 query_vector,
+                effective_mode,
                 effective_alpha,
-                int(DEFAULT_CANDIDATE_LIMIT),
+                int(effective_candidate_limit),
             )
+            for hit in batch_hits:
+                hit_key = _claim_row_key(hit)
+                if not hit_key or hit_key in seen_hit_keys:
+                    continue
+                seen_hit_keys.add(hit_key)
+                hits.append(hit)
+    else:
+        claim_where = _build_claim_where(prefiltered_doc_ids, claim_prefilter)
+        hits = _retrieve_claim_rows(
+            query_text,
+            retrieval_clause,
+            claim_where,
+            query_vector,
+            effective_mode,
+            effective_alpha,
+            int(effective_candidate_limit),
+        )
 
-    hits = _rerank_hits_with_lmdb(hits, query.strip(), RERANK_SHARD, RERANK_K)
-    hits = hits[:DEFAULT_LIMIT]
+    if not hits and prefiltered_doc_ids:
+        used_prefilter_batches = True
+        hits = _retrieve_unranked_prefilter_hits(
+            prefiltered_doc_ids,
+            claim_prefilter,
+            int(effective_candidate_limit),
+        )
+
+    if where_filter and hits:
+        candidate_claim_ids = [
+            str(hit.get("claim_id", "")).strip()
+            for hit in hits
+            if str(hit.get("claim_id", "")).strip()
+        ]
+        candidate_claim_payloads = load_claim_payloads_from_lmdb(candidate_claim_ids)
+        candidate_doc_ids: List[str] = []
+        seen_candidate_doc_ids = set()
+        for hit in hits:
+            claim_id = str(hit.get("claim_id", "")).strip()
+            payload = candidate_claim_payloads.get(claim_id) or {}
+            doc_id = str(hit.get("doc_id", "") or payload.get("doc_id") or "").strip()
+            if doc_id and doc_id not in seen_candidate_doc_ids:
+                seen_candidate_doc_ids.add(doc_id)
+                candidate_doc_ids.append(doc_id)
+        candidate_patent_meta = _fetch_patent_metadata(candidate_doc_ids)
+        hits = [
+            hit
+            for hit in hits
+            if _matches_where_filter(
+                where_filter,
+                hit,
+                candidate_claim_payloads.get(str(hit.get("claim_id", "")).strip()) or {},
+                candidate_patent_meta.get(
+                    str(
+                        hit.get("doc_id", "")
+                        or (candidate_claim_payloads.get(str(hit.get("claim_id", "")).strip()) or {}).get("doc_id")
+                        or ""
+                    ).strip(),
+                    {},
+                ),
+            )
+        ]
+
+    rerank_window = len(hits) if used_prefilter_batches else effective_rerank_k
+    hits = _rerank_hits_with_lmdb(hits, query.strip(), RERANK_SHARD, rerank_window)
+    if effective_search_scope == SEARCH_SCOPE_PATENT:
+        hits = _collapse_hits_to_patents(hits)
+    hits = hits[:effective_limit]
 
     claim_payloads = load_claim_payloads_from_lmdb(
         [str(hit.get("claim_id", "")).strip() for hit in hits if str(hit.get("claim_id", "")).strip()]
@@ -394,32 +880,41 @@ def retrieve_context(
         payload = claim_payloads.get(claim_id) or {}
         doc_id = str(hit.get("doc_id", "") or payload.get("doc_id") or "").strip()
         patent_row = patent_meta.get(doc_id, {})
-        text = rich_to_plain(str(payload.get("text") or ""))
+        claim_text = rich_to_plain(str(payload.get("text") or ""))
+        text = _preferred_result_text(effective_search_scope, patent_row, claim_text)
         snippet = text[:500]
+        best_claim_type = str(payload.get("claim_type") or "")
 
         # Include SearchItem-compatible fields in metadata for API shaping.
         metadata = {
-            "id": hit.get("claim_id") or addl.get("id", ""),
+            "id": doc_id if effective_search_scope == SEARCH_SCOPE_PATENT else hit.get("claim_id") or addl.get("id", ""),
             "title": patent_row.get("title", ""),
             "snippet": snippet,
             "search_text": text,
             "doc_id": doc_id,
             "claim_id": claim_id,
-            "claim_type": str(payload.get("claim_type") or ""),
+            "claim_type": best_claim_type,
+            "best_claim_id": claim_id,
+            "best_claim_type": best_claim_type,
             "distance": addl.get("distance"),
             "filing_date": patent_row.get("filing_date", ""),
             "classification": patent_row.get("classification", ""),
             "authors": patent_row.get("authors", []),
             "kind": patent_row.get("kind", ""),
+            "abstract_text": rich_to_plain(str(patent_row.get("abstract_text") or patent_row.get("abstract") or "")),
         }
         chunks.append({"text": text, "metadata": metadata})
 
     joined_text = "\n\n".join(c["text"] for c in chunks if c.get("text"))
     return {
         "query": query,
+        "search_scope": effective_search_scope,
         "query_vector": query_vector,
         "retrieval_mode": effective_mode,
         "hybrid_alpha": effective_alpha,
+        "result_limit": effective_limit,
+        "candidate_limit": effective_candidate_limit,
+        "rerank_k": effective_rerank_k,
         "joined_text": joined_text,
         "chunks": chunks,
     }

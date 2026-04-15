@@ -6,6 +6,7 @@ from datetime import datetime, timedelta  # Used for date and time manipulation
 from pathlib import Path
 import os
 from zipfile import ZipFile
+import zipfile
 import tarfile
 import io
 import sys
@@ -845,7 +846,9 @@ def _dataset_file_base(input_date: str | datetime, path: Path, dataset_product: 
     product_upper = dataset_product.upper()
     if product_upper == "PTGRDT":
         file_stem = f"I{last_tuesday:%Y%m%d}"
-        ext_hint = ".tar"
+        # USPTO served embedded-image grant bundles as ZIP through 2010-09-28,
+        # then switched to TAR beginning 2010-10-05.
+        ext_hint = ".tar" if last_tuesday >= datetime(2010, 10, 5) else ".ZIP"
     else:
         file_stem = f"ipg{last_tuesday:%y}{last_tuesday:%m}{last_tuesday:%d}"
         ext_hint = ".zip"
@@ -853,10 +856,24 @@ def _dataset_file_base(input_date: str | datetime, path: Path, dataset_product: 
     return base, ext_hint, last_tuesday, product_upper
 
 
+def _is_supported_archive(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    suffixes = [s.lower() for s in path.suffixes]
+    try:
+        if suffixes[-2:] == [".tar", ".gz"] or (suffixes and suffixes[-1] in {".tar", ".tgz"}):
+            return tarfile.is_tarfile(path)
+        if suffixes and suffixes[-1] == ".zip":
+            return zipfile.is_zipfile(path)
+    except Exception:
+        return False
+    return tarfile.is_tarfile(path) or zipfile.is_zipfile(path)
+
+
 def _find_existing_archive(base: Path) -> Path | None:
-    for ext in [".tar", ".tar.gz", ".tgz", ".zip"]:
+    for ext in [".tar", ".tar.gz", ".tgz", ".ZIP", ".zip"]:
         p = Path(str(base) + ext) if ext in (".tar.gz", ".tgz") else base.with_suffix(ext)
-        if p.exists() and p.stat().st_size > 0:
+        if _is_supported_archive(p):
             return p
     return None
 
@@ -912,6 +929,18 @@ def _download_with_retry(file_url: str, file_path: Path, tmp_path: Path, *, max_
                     _print_progress("[download]", downloaded, total)
                 else:
                     sys.stdout.write("\n")
+            if not _is_supported_archive(tmp_path):
+                head = b""
+                try:
+                    head = tmp_path.read_bytes()[:200].lstrip()
+                except Exception:
+                    pass
+                if head.startswith((b"<!doctype html", b"<html", b"<!DOCTYPE html")):
+                    raise ValueError(
+                        f"Downloaded HTML instead of archive from {file_url}. "
+                        "The dataset path or extension is likely wrong for this date."
+                    )
+                raise ValueError(f"Downloaded file is not a valid archive: {file_url}")
             tmp_path.replace(file_path)
             print(f"Saved: {file_path} ({file_path.stat().st_size:,} bytes)")
             return
@@ -1034,6 +1063,28 @@ def _append_chunk(collector: list, doc_chunks: list[dict] | None, record: dict):
     collector.append(record)
     if doc_chunks is not None:
         doc_chunks.append(record)
+
+
+def _normalize_doc_id(value: str | None) -> str:
+    raw = str(value or "").strip().upper()
+    if not raw:
+        return ""
+    raw = re.sub(r"[\s,_/\-]", "", raw)
+    m = re.fullmatch(r"(?:US)?([A-Z]*)(\d+)([A-Z]\d*)?", raw)
+    if not m:
+        return raw
+    prefix, digits, _suffix = m.groups()
+    digits = digits.lstrip("0") or "0"
+    return f"{prefix}{digits}"
+
+
+def _coerce_target_doc_ids(values) -> set[str]:
+    target_ids: set[str] = set()
+    for value in values or []:
+        normalized = _normalize_doc_id(value)
+        if normalized:
+            target_ids.add(normalized)
+    return target_ids
 
 
 def _load_manifest_doc_ids(manifest_path: Path) -> list[str]:
@@ -2558,6 +2609,7 @@ def bulk_dataset_download(
     metadata_mismatch_csv: Path | None = None,
     max_patents: int | None = 1000,
     master_manifest_csv: Path | None = None,
+    target_doc_ids: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> list[dict] | None:
     '''This function takes in a start date and creates an end date 7 days later.
     It then queries the USPTO bulk data API for available datasets in that date range.
@@ -2589,18 +2641,30 @@ def bulk_dataset_download(
     collect_chunks = return_chunks or sample_enabled
     max_patents = max_patents if (max_patents is None or max_patents > 0) else None
     seen_doc_ids: set[str] = set()
+    target_doc_ids = _coerce_target_doc_ids(target_doc_ids)
+    matched_target_doc_ids: set[str] = set()
     stop_processing = False
+
+    if target_doc_ids:
+        print(f"[filter] Target doc_ids enabled: {len(target_doc_ids)}")
 
     def _register_doc_id(doc_id: str | None) -> bool:
         nonlocal stop_processing
-        if not doc_id:
+        normalized = _normalize_doc_id(doc_id)
+        if not normalized:
             return False
-        if doc_id in seen_doc_ids:
+        if target_doc_ids and normalized not in target_doc_ids:
+            return False
+        if normalized in seen_doc_ids:
             return True
         if max_patents is not None and len(seen_doc_ids) >= max_patents:
             stop_processing = True
             return False
-        seen_doc_ids.add(doc_id)
+        seen_doc_ids.add(normalized)
+        if target_doc_ids:
+            matched_target_doc_ids.add(normalized)
+            if matched_target_doc_ids == target_doc_ids:
+                stop_processing = True
         return True
     sampler: StreamingSampler | None = None
     sample_target_dir = sample_out_dir or path
@@ -2622,7 +2686,7 @@ def bulk_dataset_download(
     tmp_path = Path(str(file_path) + ".part")
     
     #Below is only for testing purposes: should be removed later since file IO allows for deletion
-    if file_path.exists() and file_path.stat().st_size > 0:
+    if file_path.exists() and file_path.stat().st_size > 0 and _is_supported_archive(file_path):
         print(f"Using existing archive: {file_path} ({file_path.stat().st_size:,} bytes)")
     else:
         tmp_path = file_path.with_suffix(file_path.suffix + ".part")
@@ -2760,6 +2824,7 @@ def bulk_dataset_download(
                                 "authors": authors,
                                 "classification": classification,
                                 "title": title,
+                                "abstract_text": abstract_text,
                                 "dataset_shard": dataset_shard,
                             }
                         )
@@ -2927,6 +2992,7 @@ def bulk_dataset_download(
                                            "authors":authors,
                                            "classification": classification,
                                            "title": title,
+                                           "abstract_text": abstract_text,
                                            "dataset_shard": dataset_shard,
                                             })
                             counter += 1
@@ -3100,6 +3166,7 @@ def bulk_dataset_download(
                                                        "authors":authors,
                                                        "classification": classification,
                                                        "title": title,
+                                                       "abstract_text": abstract_text,
                                                        "dataset_shard": dataset_shard,
                                                         })
                                         counter += 1
@@ -3196,7 +3263,186 @@ def bulk_dataset_download(
             raise FileNotFoundError("No XML or inner ZIP files found inside TAR")
     else:
         with ZipFile(file_path, mode='r') as Myzip:
-            members = [n for n in Myzip.namelist() if n.lower().endswith(".xml")]
+            all_members = Myzip.namelist()
+            members = [n for n in all_members if n.lower().endswith(".xml")]
+            zip_members = [
+                n for n in all_members
+                if n.upper().endswith(".ZIP")
+                and "-SUPP/" not in n.upper()
+                and "/REISSUE/" not in n.upper()
+            ]
+            if zip_members:
+                print(f"[archive] ZIP opened: {file_path} (inner patent ZIPs: {len(zip_members)})")
+                chunks = _ChunkCollector(collect=collect_chunks, batch_size=batch_size, on_batch=on_batch)
+                total_zips = len(zip_members)
+                for j, m in enumerate(zip_members, start=1):
+                    if stop_processing:
+                        break
+                    _print_progress("[parse] patents", j - 1, total_zips)
+                    try:
+                        with Myzip.open(m, "r") as fobj:
+                            data = fobj.read()
+                        with ZipFile(io.BytesIO(data), "r") as zf:
+                            names = zf.namelist()
+                            xml_names = [n for n in names if n.lower().endswith(".xml")]
+                            if not xml_names:
+                                continue
+                            inner_xml_name = xml_names[0]
+                            with zf.open(inner_xml_name, "r") as xml_stream:
+                                for i, blob in enumerate(iter_uspto_subdocs(xml_stream), start=1):
+                                    xml_blob = clamp_patent_doc(blob)
+                                    parser_strict = make_parser()
+                                    parser_recover = etree.XMLParser(
+                                        resolve_entities=False,
+                                        load_dtd=False,
+                                        no_network=True,
+                                        huge_tree=True,
+                                        recover=True,
+                                        remove_comments=True,
+                                    )
+                                    try:
+                                        root = etree.fromstring(xml_blob, parser=parser_strict)
+                                    except etree.XMLSyntaxError as e:
+                                        try:
+                                            root = etree.fromstring(xml_blob, parser=parser_recover)
+                                            _log(f"[warn] {m}: subdoc {i} strict-parse failed but recovered: {e}")
+                                        except Exception:
+                                            save_failed(i, xml_blob, "xml_syntax_error", None)
+                                            print(f"[warn] {m}: subdoc {i} unrecoverable parse error: {e}")
+                                            continue
+                                    if is_sequence_listing(root):
+                                        continue
+                                    counter = 0
+                                    authors = ""
+                                    doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
+                                    doc_id = doc_id[0] if doc_id else None
+                                    dataset_shard = _extract_util_shard_from_path(m) or _util_shard_from_doc_id(doc_id)
+                                    if doc_id and doc_id[:2] == "RE":
+                                        print(f"[skip] reissue patent {doc_id}")
+                                        continue
+                                    if not _register_doc_id(doc_id):
+                                        if stop_processing:
+                                            break
+                                        continue
+                                    app_number = extract_application_number(root, doc_id=doc_id)
+                                    kind_list = root.xpath("//publication-reference//document-id//kind//text()")
+                                    kind = kind_list[0].strip() if kind_list else None
+                                    try:
+                                        filing_date = root.xpath("//application-reference//document-id//date//text()")[0]
+                                    except IndexError:
+                                        outline(root, max_depth=4, max_children=20)
+                                        continue
+
+                                    classification = extract_primary_classification(root)
+                                    classification_cpc = extract_all_cpc_symbols(root)
+                                    title = extract_title(root)
+                                    abstract_text = _extract_abstract_text(root)
+                                    first_names = root.xpath("//inventors//inventor//addressbook//first-name//text()")
+                                    last_names = root.xpath("//inventors//inventor//addressbook//last-name//text()")
+                                    for name in zip(first_names, last_names):
+                                        authors += " ".join(name) + "; "
+                                    authors = authors[:-2]
+                                    last_doc_meta = {
+                                        "authors": authors,
+                                        "classification": classification,
+                                        "classification_cpc": classification_cpc,
+                                        "filing_date": filing_date,
+                                        "doc_id": doc_id,
+                                        "application_number": app_number,
+                                        "kind": kind,
+                                        "title": title,
+                                    }
+                                    _maybe_validate_metadata(
+                                        last_doc_meta,
+                                        enable=meta_validate,
+                                        verbose=verbose,
+                                        collector=meta_mismatch_collector,
+                                    )
+                                    doc_buffer: list[dict] = []
+                                    claims_count = 0
+
+                                    def _record_chunk(payload: dict):
+                                        doc_buffer.append(payload)
+
+                                    for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
+                                        claim_text = elem_to_rich_text(claim).strip()
+                                        if not claim_text:
+                                            continue
+                                        claim_number = _extract_claim_number(claim, ordinal)
+                                        claim_type = _extract_claim_type(claim, claim_text)
+                                        claim_id = f"{doc_id}-CLM-{claim_number}"
+                                        _record_chunk({
+                                            "section": "claim",
+                                            "text": claim_text,
+                                            "claim_id": claim_id,
+                                            "claim_number": claim_number,
+                                            "claim_type": claim_type,
+                                            "filing_date": filing_date,
+                                            "doc_id": doc_id,
+                                            "kind": kind,
+                                            "authors": authors,
+                                            "classification": classification,
+                                            "title": title,
+                                            "abstract_text": abstract_text,
+                                            "dataset_shard": dataset_shard,
+                                        })
+                                        counter += 1
+                                        claims_count += 1
+
+                                    doc_chunks, counter = _finalize_doc_chunks(
+                                        chunks,
+                                        doc_buffer,
+                                        sample_enabled=sample_enabled,
+                                    )
+                                    if manifest_writer:
+                                        manifest_writer.write(
+                                            title=title,
+                                            cpc=classification_cpc or classification,
+                                            abstract=abstract_text,
+                                            claims_count=claims_count,
+                                            filing_date=filing_date,
+                                            source=_google_patent_source(doc_id, kind),
+                                        )
+                                    _log(f"[parse] {m}: {doc_id} (chunks: {counter})")
+                                    if sample_enabled and doc_id and assets_by_doc is not None:
+                                        try:
+                                            def _z_open_bytes(name: str) -> bytes:
+                                                with zf.open(name, "r") as ff:
+                                                    return ff.read()
+                                            doc_assets = _collect_figure_assets(root, names, _z_open_bytes)
+                                        except Exception:
+                                            doc_assets = {"images": []}
+                                        assets_by_doc[doc_id] = doc_assets
+                                        if doc_chunks:
+                                            _attach_fig_images_to_chunks(doc_chunks, doc_assets)
+                                            _append_figures_chunk(
+                                                chunks,
+                                                doc_chunks,
+                                                doc_assets,
+                                                {
+                                                    "filing_date": filing_date,
+                                                    "doc_id": doc_id,
+                                                    "kind": kind,
+                                                    "authors": authors,
+                                                    "classification": classification,
+                                                    "title": title,
+                                                },
+                                            )
+                        if stop_processing:
+                            break
+                    except Exception as e:
+                        print(f"[warn] failed reading inner zip {m}: {e}")
+                        continue
+                _print_progress("[parse] patents", total_zips, total_zips)
+                _flush_collector(chunks)
+                print("[done] Completed processing all subdocuments (zip/zips).")
+                _flush_meta_mismatches()
+                if return_chunks:
+                    _close_manifest_writer()
+                    return chunks
+                _close_manifest_writer()
+                return None
+
             if not members:
                 raise FileNotFoundError("No .xml found inside ZIP")
             inner_xml_name = members[0]  # often there’s exactly one
@@ -3312,6 +3558,7 @@ def bulk_dataset_download(
                                        "authors":authors,
                                        "classification": classification,
                                        "title": title,
+                                       "abstract_text": abstract_text,
                                        "dataset_shard": dataset_shard,
                                         })
                         counter += 1

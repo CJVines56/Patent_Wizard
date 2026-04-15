@@ -49,8 +49,3 @@ dev = [
     "pytest (>=8.4.2,<9.0.0)",
     "ruff (>=0.13.1,<0.14.0)"
 ]
-
-[[tool.poetry.source]]
-name = "pytorch"
-url = "https://download.pytorch.org/whl/cu124"
-priority = "explicit"

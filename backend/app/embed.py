@@ -6,6 +6,7 @@
 from transformers import AutoTokenizer, AutoModel
 import torch
 import torch.nn.functional as F
+from backend.app.env_bootstrap import coerce_path_string, load_project_env
 from backend.app.services.download import rich_to_plain
 from backend.app.vector_config import (
     ENABLED_COLBERT_VARIANTS,
@@ -16,6 +17,7 @@ from backend.app.vector_config import (
     TOKEN_VECTOR_DTYPE,
     assert_128_variant,
 )
+from contextlib import nullcontext
 from pathlib import Path
 import json
 import gzip
@@ -24,6 +26,8 @@ import re
 import warnings
 from typing import Any
 import numpy as np
+
+load_project_env()
 
 warnings.filterwarnings(
     "ignore",
@@ -64,14 +68,138 @@ warnings.filterwarnings(
 )
 
 DEFAULT_MODEL_NAME = "colbert-ir/colbertv2.0"
-MODEL_NAME = (
-    os.environ.get("COLBERT_MODEL_PATH")
-    or os.environ.get("COLBERT_MODEL_NAME")
-    or os.environ.get("MODEL_NAME")
-    or DEFAULT_MODEL_NAME
-)
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _iter_hf_cache_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(candidate: Path | None):
+        if candidate is None:
+            return
+        key = str(candidate)
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(candidate)
+
+    hub_cache = coerce_path_string(os.environ.get("HUGGINGFACE_HUB_CACHE"))
+    add(hub_cache)
+
+    hf_home = coerce_path_string(os.environ.get("HF_HOME"))
+    if hf_home is not None:
+        add(hf_home / "hub")
+
+    add(Path.home() / ".cache" / "huggingface" / "hub")
+
+    windows_users = Path("/mnt/c/Users")
+    if windows_users.exists():
+        for user_dir in sorted(p for p in windows_users.iterdir() if p.is_dir()):
+            add(user_dir / ".cache" / "huggingface" / "hub")
+
+    return roots
+
+
+def _discover_local_colbert_snapshot() -> Path | None:
+    for cache_root in _iter_hf_cache_roots():
+        model_root = cache_root / "models--colbert-ir--colbertv2.0"
+        if not model_root.exists():
+            continue
+
+        ref_main = model_root / "refs" / "main"
+        if ref_main.exists():
+            snapshot_name = ref_main.read_text(encoding="utf-8").strip()
+            if snapshot_name:
+                snapshot_path = model_root / "snapshots" / snapshot_name
+                if snapshot_path.exists():
+                    return snapshot_path
+
+        snapshots_dir = model_root / "snapshots"
+        if not snapshots_dir.exists():
+            continue
+        snapshots = sorted(
+            (p for p in snapshots_dir.iterdir() if p.is_dir()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if snapshots:
+            return snapshots[0]
+
+    return None
+
+
+def _resolve_model_name() -> str:
+    raw = (
+        os.environ.get("COLBERT_MODEL_PATH")
+        or os.environ.get("COLBERT_MODEL_NAME")
+        or os.environ.get("MODEL_NAME")
+        or ""
+    ).strip()
+    if raw:
+        candidate = coerce_path_string(raw)
+        if candidate is not None and candidate.exists():
+            return str(candidate)
+        return raw
+
+    discovered = _discover_local_colbert_snapshot()
+    if discovered is not None:
+        return str(discovered)
+
+    return DEFAULT_MODEL_NAME
+
+
+MODEL_NAME = _resolve_model_name()
+
+
+def _resolve_device() -> torch.device:
+    requested = (os.environ.get("EMBED_DEVICE") or "auto").strip().lower()
+    if requested and requested != "auto":
+        device = torch.device(requested)
+        if device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("EMBED_DEVICE requests CUDA, but torch.cuda.is_available() is false.")
+        return device
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+DEVICE = _resolve_device()
+EMBED_USE_AUTOCAST = DEVICE.type == "cuda" and _env_flag("EMBED_USE_AUTOCAST", True)
+EMBED_BATCH_SIZE = max(1, int(os.environ.get("EMBED_BATCH_SIZE", "16" if DEVICE.type == "cuda" else "4")))
+TOKENIZER_PAD_MULTIPLE = 8 if DEVICE.type == "cuda" else None
+
+if hasattr(torch, "set_float32_matmul_precision"):
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
+if DEVICE.type == "cuda":
+    torch.backends.cuda.matmul.allow_tf32 = True
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+
+
+def _device_summary() -> str:
+    if DEVICE.type == "cuda":
+        try:
+            return f"{DEVICE} ({torch.cuda.get_device_name(DEVICE)})"
+        except Exception:
+            return str(DEVICE)
+    return str(DEVICE)
+
+
+def _model_exec_context():
+    if EMBED_USE_AUTOCAST:
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    return nullcontext()
 # Remember to alter model path anytime you download a new snapshot!
 # MODEL_PATH = r"C:/Users/Christian Casteel/.cache/huggingface/hub/models--colbert-ir--colbertv2.0/snapshots/c1e84128e85ef755c096a95bdb06b47793b13acf"
 
@@ -79,6 +207,7 @@ LOCAL_ONLY = bool(
     os.environ.get("TRANSFORMERS_OFFLINE") == "1"
     or os.environ.get("HF_HUB_OFFLINE") == "1"
     or os.environ.get("LOCAL_MODEL_ONLY") == "1"
+    or Path(MODEL_NAME).exists()
 )
 
 model_path = MODEL_NAME
@@ -183,7 +312,8 @@ def _projection_summary() -> str:
     return (
         f"model={MODEL_NAME} projection_mode={PROJECTION_MODE} "
         f"projection_path={PROJECTION_PATH} projection_shape={shape} "
-        f"final_token_dim={TOKEN_VECTOR_DIM} token_dtype={TOKEN_VECTOR_DTYPE}"
+        f"final_token_dim={TOKEN_VECTOR_DIM} token_dtype={TOKEN_VECTOR_DTYPE} "
+        f"device={_device_summary()} batch_size={EMBED_BATCH_SIZE} autocast={EMBED_USE_AUTOCAST}"
     )
 
 
@@ -333,6 +463,44 @@ def _expand_chunks_for_token_limit(chunks, tokenizer, max_length: int, overlap_t
             new_chunk["part_count"] = part_count
             expanded.append(new_chunk)
     return expanded
+
+
+def _move_tokens_to_device(tokens: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    non_blocking = DEVICE.type == "cuda"
+    return {k: v.to(DEVICE, non_blocking=non_blocking) for k, v in tokens.items()}
+
+
+def _resolve_tokenizer_length(max_length: int, tokenizer_obj) -> tuple[int, int | None]:
+    resolved = max(1, int(max_length))
+    pad_multiple = TOKENIZER_PAD_MULTIPLE
+    if not pad_multiple or resolved % pad_multiple == 0:
+        return resolved, pad_multiple
+
+    rounded_up = resolved + (pad_multiple - (resolved % pad_multiple))
+    tokenizer_max = getattr(tokenizer_obj, "model_max_length", None)
+    if isinstance(tokenizer_max, int) and tokenizer_max > 0 and rounded_up > tokenizer_max:
+        return resolved, None
+
+    return rounded_up, pad_multiple
+
+
+def _tokenize_texts(
+    texts: list[str],
+    max_length: int,
+    *,
+    pad_to_multiple_of: int | None = None,
+) -> dict[str, torch.Tensor]:
+    kwargs = dict(
+        return_tensors="pt",
+        truncation=True,
+        padding=True,
+        max_length=max_length,
+    )
+    if pad_to_multiple_of:
+        kwargs["pad_to_multiple_of"] = pad_to_multiple_of
+    return tokenizer(texts, **kwargs)
+
+
 def embed_chunks(chunks, tokenizer, model, max_length=350):
     print("Starting embedding process...")
     print(f"[embed-config] {_projection_summary()}")
@@ -345,6 +513,13 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
     effective_max = max_length
     if model_max and isinstance(model_max, int):
         effective_max = min(max_length, model_max)
+    requested_max = effective_max
+    effective_max, pad_multiple = _resolve_tokenizer_length(effective_max, tokenizer)
+    if effective_max != requested_max:
+        print(
+            f"[embed-config] adjusted max_length from {requested_max} to {effective_max} "
+            f"to satisfy CUDA tokenizer padding"
+        )
 
     chunks = _expand_chunks_for_token_limit(
         chunks,
@@ -355,46 +530,54 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
 
 # Loop through the chunks based on label, clean text up further, and then tokenize.             #
     progress_every = int(os.environ.get("EMBED_PROGRESS_EVERY", "50"))
+    valid_chunks: list[dict] = []
+    valid_texts: list[str] = []
     for idx, chunk in enumerate(chunks):
-        if progress_every > 0 and (idx == 0 or (idx + 1) % progress_every == 0):
-            print(f"Embedding chunk {idx + 1} of {len(chunks)})")
         text = normalize_text_for_embedding(chunk.get("text") or chunk.get("chunk"))
-
         if not text:
             print(f"Empty chunk at index {idx}")
             continue
+        valid_chunks.append(chunk)
+        valid_texts.append(text)
 
-# Call the tokenizer function.                                                                  #
-        tokens = tokenizer(
-            text,                        # chunk text
-            return_tensors="pt",        # change format from lists to pt tensors so ColBERT can read
-            truncation=True,            # truncate chunks that go over the token limits
-            padding="max_length",       # add zero tokens to make sure tensors are equal size. Helps the model embed faster
-            max_length=effective_max     # the token limit
+    total = len(valid_chunks)
+    for start in range(0, total, EMBED_BATCH_SIZE):
+        batch_chunks = valid_chunks[start:start + EMBED_BATCH_SIZE]
+        batch_texts = valid_texts[start:start + EMBED_BATCH_SIZE]
+        batch_end = start + len(batch_chunks)
+        if progress_every > 0 and (start == 0 or batch_end % progress_every == 0 or batch_end == total):
+            print(f"Embedding chunk {batch_end} of {total}")
+
+        cpu_tokens = _tokenize_texts(
+            batch_texts,
+            effective_max,
+            pad_to_multiple_of=pad_multiple,
         )
-        tokens = {k: v.to(DEVICE) for k, v in tokens.items()}
+        attention_lengths = cpu_tokens["attention_mask"].sum(dim=1).tolist()
 
-# Warning message if a chunk was truncated, this means I need to make chunks shorter.           #
-        if tokens["input_ids"].shape[1] == effective_max:
-            token_count = _token_count(text, tokenizer)
-            if token_count > effective_max:
-                print(
-                    f"WARNING chunk {chunk.get('section')} truncated from "
-                    f"{token_count} tokens to {effective_max}."
-                )
+        for row, text in enumerate(batch_texts):
+            if attention_lengths[row] == effective_max:
+                token_count = _token_count(text, tokenizer)
+                if token_count > effective_max:
+                    print(
+                        f"WARNING chunk {batch_chunks[row].get('section')} truncated from "
+                        f"{token_count} tokens to {effective_max}."
+                    )
 
-# Embed the tokenized text by running it through ColBERT. Tell Pytorch not to track gradients.  #
-# stops the collection of tracking data to save a lot of computing time.                        #
-# At this point, we now have a set of embeddings for a chunk.                                   #
-        with torch.no_grad():
-            outputs = model(**tokens)
-            token_embeddings = outputs.last_hidden_state.squeeze(0)
+        tokens = _move_tokens_to_device(cpu_tokens)
+
+        with torch.inference_mode():
+            with _model_exec_context():
+                outputs = model(**tokens)
+            token_embeddings = outputs.last_hidden_state
             if token_embeddings.shape[-1] != 768:
                 raise ValueError(
                     f"Expected 768-d token embeddings, got {token_embeddings.shape[-1]}"
                 )
-            attn_mask = tokens["attention_mask"].squeeze(0).bool()
-            masked_embeddings = token_embeddings[attn_mask]
+
+        attention_mask = tokens["attention_mask"].bool()
+        for row, chunk in enumerate(batch_chunks):
+            masked_embeddings = token_embeddings[row][attention_mask[row]]
             if masked_embeddings.numel() == 0:
                 raise ValueError("No non-padding tokens available after attention_mask filtering.")
             projected_tokens = _project_tokens_128(masked_embeddings)
@@ -419,28 +602,33 @@ def embed_chunks(chunks, tokenizer, model, max_length=350):
             if np.asarray(colbert_vectors).shape[-1] != 128:
                 raise ValueError("Configured ColBERT vectors are not 128-d.")
 
-        chunk["embedding"] = chunk_vector
-        chunk["colbert"] = colbert_vectors
-        chunk["colbert_variants"] = colbert_variants
-        embeddings.append(chunk)
+            chunk["embedding"] = chunk_vector
+            chunk["colbert"] = colbert_vectors
+            chunk["colbert_variants"] = colbert_variants
+            embeddings.append(chunk)
 
     return embeddings
 
 def embed_query(query, tokenizer, model, max_length=256):
     model.eval()
     query_text = normalize_text_for_embedding(query)
- 
-    tokens = tokenizer(
-        query_text,
+
+    effective_max, pad_multiple = _resolve_tokenizer_length(max_length, tokenizer)
+    kwargs = dict(
         return_tensors="pt", 
         truncation=True, 
         padding="max_length", 
-        max_length=max_length
-        )
-    tokens = {k: v.to(DEVICE) for k, v in tokens.items()}
+        max_length=effective_max,
+    )
+    if pad_multiple:
+        kwargs["pad_to_multiple_of"] = pad_multiple
+
+    tokens = tokenizer(query_text, **kwargs)
+    tokens = _move_tokens_to_device(tokens)
     
-    with torch.no_grad():
-        outputs = model(**tokens)
+    with torch.inference_mode():
+        with _model_exec_context():
+            outputs = model(**tokens)
 
     token_embeddings = outputs.last_hidden_state.squeeze(0)
     if token_embeddings.shape[-1] != 768:
@@ -464,17 +652,21 @@ def embed_query_tokens_for_shard(query: str, shard: str, max_length: int = 256):
     """
     shard = assert_128_variant(shard, context="embed_query_tokens_for_shard")
     query_text = normalize_text_for_embedding(query)
-    tokens = tokenizer(
-        query_text,
+    effective_max, pad_multiple = _resolve_tokenizer_length(max_length, tokenizer)
+    kwargs = dict(
         return_tensors="pt",
         truncation=True,
         padding="max_length",
-        max_length=max_length,
+        max_length=effective_max,
     )
-    tokens = {k: v.to(DEVICE) for k, v in tokens.items()}
+    if pad_multiple:
+        kwargs["pad_to_multiple_of"] = pad_multiple
+    tokens = tokenizer(query_text, **kwargs)
+    tokens = _move_tokens_to_device(tokens)
     model.eval()
-    with torch.no_grad():
-        outputs = model(**tokens)
+    with torch.inference_mode():
+        with _model_exec_context():
+            outputs = model(**tokens)
     token_embeddings = outputs.last_hidden_state.squeeze(0)
     if token_embeddings.shape[-1] != 768:
         raise ValueError(f"Expected query token embeddings [T,768], got {tuple(token_embeddings.shape)}.")

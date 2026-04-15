@@ -6,10 +6,12 @@ Utility script for ingest/export workflows.
 """
 
 import os
+import csv
 import json
 import gzip
 import time
 import subprocess
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -33,6 +35,42 @@ LMDB_VECTOR_DTYPE = os.environ.get(
 _BYTES_PER_FLOAT = 2 if LMDB_VECTOR_DTYPE == "float16" else 4
 
 
+def _normalize_doc_id(value: str | None) -> str:
+    raw = str(value or "").strip().upper()
+    if not raw:
+        return ""
+    raw = re.sub(r"[\s,_/\-]", "", raw)
+    m = re.fullmatch(r"(?:US)?([A-Z]*)(\d+)([A-Z]\d*)?", raw)
+    if not m:
+        return raw
+    prefix, digits, _suffix = m.groups()
+    digits = digits.lstrip("0") or "0"
+    return f"{prefix}{digits}"
+
+
+def _load_target_doc_ids_file(path: Path) -> list[str]:
+    if not path.exists():
+        raise FileNotFoundError(f"Target doc_id file not found: {path}")
+
+    if path.suffix.lower() == ".csv":
+        doc_ids: list[str] = []
+        with path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                did = _normalize_doc_id(row.get("doc_id"))
+                if did:
+                    doc_ids.append(did)
+        return doc_ids
+
+    doc_ids = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            value = _normalize_doc_id(line)
+            if value and not value.startswith("#"):
+                doc_ids.append(value)
+    return doc_ids
+
+
 def _build_weekly_dates(start_date: str, weeks_back: int) -> list[str]:
     anchor = datetime.strptime(start_date, "%Y-%m-%d")
     count = max(0, int(weeks_back))
@@ -45,11 +83,14 @@ def _build_weekly_dates(start_date: str, weeks_back: int) -> list[str]:
 def _compact_util_shards(util_shards: set[str]) -> None:
     if not util_shards:
         return
+    if os.environ.get("LMDB_SHARDING_MODE", "none").strip().lower() != "util":
+        util_shards.clear()
+        return
     print(f"[post] Compacting {len(util_shards)} util LMDB shard(s)...")
     for util in sorted(util_shards):
         try:
             subprocess.run(
-                ["poetry", "run", "python", "backend/app/scripts/compact_lmdb.py", "--util-shard", util],
+                ["poetry", "run", "python", "backend/app/scripts/compact_lmdb.py", "--all"],
                 check=True,
             )
         except Exception as e:
@@ -212,6 +253,8 @@ def real_ingest(
     ingest_dates: list[str] | None = None,
     master_manifest_csv: Path | None = None,
     ingest_checkpoint_path: Path | None = None,
+    max_patents: int | None = None,
+    target_doc_ids: list[str] | None = None,
 ):
     """
     Download, embed, and optionally store/export real patent chunks.
@@ -226,6 +269,12 @@ def real_ingest(
     start_time = time.perf_counter()
     current_dataset_shards: set[str] = set()
     current_dataset_id: str | None = None
+    remaining_target_doc_ids = {
+        _normalize_doc_id(doc_id)
+        for doc_id in (target_doc_ids or [])
+        if _normalize_doc_id(doc_id)
+    }
+    found_target_doc_ids: set[str] = set()
     completed_dates = (
         _load_completed_ingest_dates(ingest_checkpoint_path)
         if ingest_checkpoint_path
@@ -253,6 +302,11 @@ def real_ingest(
         embedded = embed_chunks(batch, tokenizer, model)
         batch_seconds = time.perf_counter() - batch_start
         total_embedded += len(embedded)
+        if remaining_target_doc_ids:
+            for rec in embedded:
+                normalized_doc_id = _normalize_doc_id(rec.get("doc_id"))
+                if normalized_doc_id in remaining_target_doc_ids:
+                    found_target_doc_ids.add(normalized_doc_id)
         for rec in embedded:
             shard = rec.get("dataset_shard")
             if isinstance(shard, str):
@@ -294,6 +348,9 @@ def real_ingest(
         dates = ingest_dates or ["2025-09-01"]
         if ingest_batch_size:
             for ingest_date in dates:
+                if remaining_target_doc_ids and found_target_doc_ids == remaining_target_doc_ids:
+                    print("[ingest] All target doc_ids found; stopping early.")
+                    break
                 if ingest_date in completed_dates:
                     print(f"[checkpoint] Skipping completed date {ingest_date}")
                     continue
@@ -305,7 +362,8 @@ def real_ingest(
                     DOWNLOAD_DIR,
                     use_manifest=False,
                     sample_k=0,
-                    max_patents=None,
+                    max_patents=max_patents,
+                    target_doc_ids=sorted(remaining_target_doc_ids - found_target_doc_ids),
                     return_chunks=False,
                     batch_size=ingest_batch_size,
                     on_batch=_record_batch,
@@ -318,6 +376,9 @@ def real_ingest(
                     print(f"[checkpoint] Recorded completion for {ingest_date}")
         else:
             for ingest_date in dates:
+                if remaining_target_doc_ids and found_target_doc_ids == remaining_target_doc_ids:
+                    print("[ingest] All target doc_ids found; stopping early.")
+                    break
                 if ingest_date in completed_dates:
                     print(f"[checkpoint] Skipping completed date {ingest_date}")
                     continue
@@ -329,7 +390,8 @@ def real_ingest(
                     DOWNLOAD_DIR,
                     use_manifest=False,
                     sample_k=0,
-                    max_patents=None,
+                    max_patents=max_patents,
+                    target_doc_ids=sorted(remaining_target_doc_ids - found_target_doc_ids),
                     master_manifest_csv=master_manifest_csv,
                 )
                 _record_batch(chunks)
@@ -345,6 +407,13 @@ def real_ingest(
         minutes = int((elapsed % 3600) // 60)
         seconds = int(elapsed % 60)
         print(f"[timing] Total ingest+embed time: {hours}h {minutes}m {seconds}s")
+        if remaining_target_doc_ids:
+            missing = sorted(remaining_target_doc_ids - found_target_doc_ids)
+            print(
+                f"[ingest] Target doc_ids found={len(found_target_doc_ids)}/{len(remaining_target_doc_ids)}"
+            )
+            if missing:
+                print(f"[ingest] Missing target doc_ids: {', '.join(missing)}")
         print(
             "[next] Start API: "
             "poetry run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
@@ -418,8 +487,40 @@ if __name__ == "__main__":
             "backend/validation/ingest_completed_dates.txt",
         ).strip()
         checkpoint_path = Path(checkpoint_raw) if checkpoint_raw else None
+        max_patents_raw = os.environ.get("INGEST_MAX_PATENTS", "").strip()
+        try:
+            max_patents = int(max_patents_raw) if max_patents_raw else None
+        except ValueError:
+            max_patents = None
+        if max_patents is not None and max_patents <= 0:
+            max_patents = None
+        if max_patents is not None:
+            print(f"[ingest] Patent cap enabled: {max_patents}")
+        target_doc_ids: list[str] = []
+        target_doc_ids_raw = os.environ.get("INGEST_TARGET_DOC_IDS", "").strip()
+        if target_doc_ids_raw:
+            for part in target_doc_ids_raw.split(","):
+                normalized = _normalize_doc_id(part)
+                if normalized:
+                    target_doc_ids.append(normalized)
+        target_doc_ids_file_raw = os.environ.get("INGEST_TARGET_DOC_IDS_FILE", "").strip()
+        if target_doc_ids_file_raw:
+            target_doc_ids.extend(_load_target_doc_ids_file(Path(target_doc_ids_file_raw)))
+        if target_doc_ids:
+            deduped: list[str] = []
+            seen: set[str] = set()
+            for doc_id in target_doc_ids:
+                normalized = _normalize_doc_id(doc_id)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                deduped.append(normalized)
+            target_doc_ids = deduped
+            print(f"[ingest] Target doc_id filter enabled: {len(target_doc_ids)}")
         real_ingest(
             ingest_dates=ingest_dates,
             master_manifest_csv=manifest_csv,
             ingest_checkpoint_path=checkpoint_path,
+            max_patents=max_patents,
+            target_doc_ids=target_doc_ids or None,
         )

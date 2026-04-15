@@ -52,7 +52,7 @@ _DEFAULT_HTTP_HOST = os.environ.get(
 _DEFAULT_HTTP_PORT = int(
     os.environ.get(
         "WEAVIATE_HTTP_PORT",
-        os.environ.get("WEAVIATE_LOCAL_PORT", "8080"),
+        os.environ.get("WEAVIATE_LOCAL_PORT", "8081"),
     )
 )
 _DEFAULT_HTTP_SCHEME = "https" if _env_bool("WEAVIATE_HTTP_SECURE", False) else "http"
