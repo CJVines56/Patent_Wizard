@@ -9,14 +9,6 @@ from langchain.tools import tool
 
 from backend.app.env_bootstrap import load_project_env
 from backend.app.services.download import rich_to_plain
-from backend.app.store import (
-    LMDB_PATH_128_F16,
-    LMDB_PATH_128_F32,
-    load_claim_payloads_from_lmdb,
-    load_colbert_from_lmdb,
-    load_patent_metadata_batch_from_lmdb,
-    resolve_lmdb_path,
-)
 from backend.app.vector_config import WEAVIATE_NAMED_VECTOR, assert_128_variant
 
 load_project_env()
@@ -43,6 +35,7 @@ _DEFAULT_HTTP_SCHEME = "https" if _env_bool("WEAVIATE_HTTP_SECURE", False) else 
 _DEFAULT_WEAVIATE_HTTP_BASE = f"{_DEFAULT_HTTP_SCHEME}://{_DEFAULT_HTTP_HOST}:{_DEFAULT_HTTP_PORT}"
 
 WEAVIATE_GRAPHQL = os.environ.get("WEAVIATE_GRAPHQL", f"{_DEFAULT_WEAVIATE_HTTP_BASE}/v1/graphql")
+WEAVIATE_OBJECTS = os.environ.get("WEAVIATE_OBJECTS", f"{_DEFAULT_WEAVIATE_HTTP_BASE}/v1/objects")
 DEFAULT_LIMIT = int(os.environ.get("RETRIEVAL_K", "5"))
 DEFAULT_CANDIDATE_LIMIT = int(os.environ.get("RETRIEVAL_CANDIDATES", str(max(DEFAULT_LIMIT, 400))))
 RERANK_SHARD = assert_128_variant(
@@ -65,6 +58,11 @@ try:
 except (TypeError, ValueError):
     HYBRID_ALPHA = 0.5
 HYBRID_ALPHA = max(0.0, min(1.0, HYBRID_ALPHA))
+RERANK_SOURCE = str(os.environ.get("RERANK_SOURCE", "auto") or "auto").strip().lower()
+if RERANK_SOURCE not in {"auto", "lmdb", "weaviate"}:
+    raise ValueError(
+        f"Invalid RERANK_SOURCE='{RERANK_SOURCE}'. Allowed: auto, lmdb, weaviate."
+    )
 FORCE_CLIENT_HYBRID = os.environ.get("FORCE_CLIENT_HYBRID", "1").strip() not in {
     "0",
     "false",
@@ -86,11 +84,6 @@ PATENT_PREFILTER_FIELDS = {
     "filing_date",
     "kind",
     "title",
-}
-
-SHARD_TO_PATH = {
-    "128_f16": LMDB_PATH_128_F16,
-    "128_f32": LMDB_PATH_128_F32,
 }
 
 
@@ -117,14 +110,13 @@ def _embed_query_tokens_for_shard(query: str, shard: str) -> np.ndarray:
     )
 
     shard = assert_128_variant(shard, context="orchestrator._embed_query_tokens_for_shard")
-    if shard not in SHARD_TO_PATH:
-        raise ValueError(f"Unknown shard '{shard}'. Choose from: {sorted(SHARD_TO_PATH)}")
     query_text = normalize_text_for_embedding(query)
     vecs = np.asarray(shared_embed_query_tokens_for_shard(query_text, shard=shard, max_length=256))
     if vecs.ndim == 1:
         vecs = vecs.reshape(1, -1)
+    if vecs.ndim != 2 or vecs.shape[1] != 128:
+        raise ValueError(f"Query token vectors must be [T,128], got {vecs.shape}.")
     return vecs
-
 
 def _post_graphql(query: str) -> Dict[str, Any]:
     resp = requests.post(WEAVIATE_GRAPHQL, json={"query": query}, timeout=60)
@@ -691,10 +683,6 @@ def _resolve_positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     return max(int(minimum), resolved)
 
 
-def _is_missing_metadata_value(value: Any) -> bool:
-    return value is None or value == "" or value == []
-
-
 def _normalize_search_scope(value: str | None) -> str:
     scope = str(value or SEARCH_SCOPE_CLAIM).strip().lower()
     return SEARCH_SCOPE_PATENT if scope == SEARCH_SCOPE_PATENT else SEARCH_SCOPE_CLAIM
@@ -735,21 +723,18 @@ def _fetch_patent_metadata(doc_ids: List[str]) -> Dict[str, Dict[str, Any]]:
                 if doc_id:
                     rows_by_doc_id[doc_id] = row
     except Exception as exc:
-        print(f"[warn] patent metadata fetch from Weaviate failed; using LMDB fallback: {exc}")
-
-    for doc_id, overlay in load_patent_metadata_batch_from_lmdb(ordered_doc_ids).items():
-        merged = dict(rows_by_doc_id.get(doc_id) or {})
-        for key, value in (overlay or {}).items():
-            if key in {"abstract", "abstract_text"}:
-                if value:
-                    merged[key] = value
-                continue
-            if _is_missing_metadata_value(merged.get(key)) and not _is_missing_metadata_value(value):
-                merged[key] = value
-        if merged:
-            rows_by_doc_id[doc_id] = merged
+        print(f"[warn] patent metadata fetch from Weaviate failed: {exc}")
 
     return rows_by_doc_id
+
+
+def _coerce_token_matrix(value: Any, *, identity: str) -> np.ndarray:
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.ndim != 2 or arr.shape[0] <= 0 or arr.shape[1] != 128:
+        raise ValueError(f"Weaviate vector for {identity} must be [T,128], got {arr.shape}.")
+    return arr
 
 
 def _prefilter_doc_ids_from_patent_metadata(where_filter: Optional[Dict[str, Any]]) -> Optional[List[str]]:
@@ -794,38 +779,90 @@ def _prefilter_doc_ids_from_patent_metadata(where_filter: Optional[Dict[str, Any
 
 
 def _maxsim_score(query_tokens: np.ndarray, doc_tokens: np.ndarray) -> float:
-    if query_tokens.size == 0 or doc_tokens.size == 0:
+    if doc_tokens.size == 0 or query_tokens.size == 0:
         return float("-inf")
     qt = query_tokens.astype(np.float32, copy=False)
     dt = doc_tokens.astype(np.float32, copy=False)
-    if qt.ndim != 2 or dt.ndim != 2:
-        return float("-inf")
-    if qt.shape[1] != dt.shape[1]:
+    if qt.ndim != 2 or dt.ndim != 2 or qt.shape[1] != dt.shape[1]:
         return float("-inf")
     sims = qt @ dt.T
     return float(np.max(sims, axis=1).sum())
 
 
-def _rerank_hits_with_lmdb(hits: List[Dict[str, Any]], query: str, shard: str, rerank_k: int) -> List[Dict[str, Any]]:
-    shard = assert_128_variant(shard, context="orchestrator._rerank_hits_with_lmdb")
-    if shard not in SHARD_TO_PATH:
-        raise ValueError(f"Unknown shard '{shard}'. Choose from: {sorted(SHARD_TO_PATH)}")
+def _fetch_colbert_vectors_from_weaviate_http(object_ids: List[str]) -> Dict[str, np.ndarray]:
+    ids = [str(oid).strip() for oid in object_ids if str(oid).strip()]
+    if not ids:
+        return {}
+    sess = requests.Session()
+    out: Dict[str, np.ndarray] = {}
+    for oid in ids:
+        url = f"{WEAVIATE_OBJECTS}/Claim/{oid}"
+        resp = sess.get(url, params={"include": "vector"}, timeout=60)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Weaviate vector fetch failed for {oid}: {resp.status_code} {resp.text[:300]}")
+        payload = resp.json()
+        vectors = payload.get("vectors")
+        if not isinstance(vectors, dict):
+            vectors = payload.get("vector")
+        if not isinstance(vectors, dict) or WEAVIATE_NAMED_VECTOR not in vectors:
+            raise ValueError(
+                f"Weaviate object {oid} missing named vector '{WEAVIATE_NAMED_VECTOR}'."
+            )
+        out[oid] = _coerce_token_matrix(vectors[WEAVIATE_NAMED_VECTOR], identity=oid)
+    return out
+
+
+def _rerank_hits_with_weaviate(hits: List[Dict[str, Any]], query: str, shard: str, rerank_k: int) -> List[Dict[str, Any]]:
     q_tokens = _embed_query_tokens_for_shard(query, shard)
     top = hits[: max(0, int(rerank_k))]
-    scored = []
+    object_ids = [str((hit.get("_additional") or {}).get("id") or "").strip() for hit in top]
+    if any(not oid for oid in object_ids):
+        raise ValueError("All rerank candidates must include Weaviate object UUID for reranking.")
+    vectors_by_object_id = _fetch_colbert_vectors_from_weaviate_http(object_ids)
+    scored: List[tuple[float, Dict[str, Any]]] = []
+    for hit in top:
+        obj_id = str((hit.get("_additional") or {}).get("id") or "").strip()
+        doc_tokens = vectors_by_object_id.get(obj_id)
+        if doc_tokens is None:
+            raise RuntimeError(f"Missing Weaviate vectors for object id={obj_id}")
+        score = _maxsim_score(q_tokens, doc_tokens)
+        scored.append((score, hit))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    reranked = []
+    used = set()
+    for score, hit in scored:
+        addl = dict(hit.get("_additional") or {})
+        addl["score"] = score
+        enriched_hit = dict(hit)
+        enriched_hit["_additional"] = addl
+        reranked.append(enriched_hit)
+        used.add(id(hit))
+    for hit in top:
+        if id(hit) not in used:
+            reranked.append(hit)
+    reranked.extend(hits[int(rerank_k):])
+    return reranked
+
+
+def _rerank_hits_with_lmdb(hits: List[Dict[str, Any]], query: str, shard: str, rerank_k: int) -> List[Dict[str, Any]]:
+    from backend.app.store import load_colbert_from_lmdb, resolve_lmdb_path
+
+    q_tokens = _embed_query_tokens_for_shard(query, shard)
+    top = hits[: max(0, int(rerank_k))]
+    scored: List[tuple[float, Dict[str, Any]]] = []
     for hit in top:
         addl = hit.get("_additional") or {}
-        obj_id = addl.get("id")
-        claim_id = hit.get("claim_id")
-        doc_id = hit.get("doc_id")
-        if not obj_id and not claim_id:
+        claim_id = str(hit.get("claim_id") or "").strip()
+        doc_id = str(hit.get("doc_id") or "").strip()
+        obj_id = str(addl.get("id") or "").strip()
+        if not claim_id and not obj_id:
             continue
-        lmdb_path = resolve_lmdb_path(shard, doc_id=doc_id)
-        # Primary LMDB key is claim_id; keep UUID fallback for older ingests.
-        lookup_keys = [k for k in [claim_id, obj_id] if k]
+        lmdb_path = resolve_lmdb_path(shard, doc_id=doc_id or None)
         doc_tokens = None
-        for k in lookup_keys:
-            doc_tokens = load_colbert_from_lmdb(lmdb_path, str(k))
+        for key in [claim_id, obj_id]:
+            if not key:
+                continue
+            doc_tokens = load_colbert_from_lmdb(lmdb_path, key)
             if doc_tokens is not None:
                 break
         if doc_tokens is None:
@@ -834,21 +871,37 @@ def _rerank_hits_with_lmdb(hits: List[Dict[str, Any]], query: str, shard: str, r
         if arr.ndim == 1:
             arr = arr.reshape(1, -1)
         if arr.ndim != 2 or arr.shape[1] != 128:
-            raise ValueError(
-                f"LMDB vectors must be [T,128] for claim_id={claim_id}; got shape={arr.shape}"
-            )
-        score = _maxsim_score(q_tokens, doc_tokens)
-        if score == float("-inf"):
-            raise RuntimeError(f"Invalid MaxSim score for claim_id={claim_id}")
+            raise ValueError(f"LMDB vectors must be [T,128] for claim_id={claim_id}; got shape={arr.shape}")
+        score = _maxsim_score(q_tokens, arr)
         scored.append((score, hit))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    reranked = [hit for _, hit in scored]
-    used = {id(hit) for hit in reranked}
+    scored.sort(key=lambda item: item[0], reverse=True)
+    reranked = []
+    used = set()
+    for score, hit in scored:
+        addl = dict(hit.get("_additional") or {})
+        addl["score"] = score
+        enriched_hit = dict(hit)
+        enriched_hit["_additional"] = addl
+        reranked.append(enriched_hit)
+        used.add(id(hit))
     for hit in top:
         if id(hit) not in used:
             reranked.append(hit)
     reranked.extend(hits[int(rerank_k):])
     return reranked
+
+
+def _rerank_hits(hits: List[Dict[str, Any]], query: str, shard: str, rerank_k: int) -> List[Dict[str, Any]]:
+    source = RERANK_SOURCE
+    if source == "weaviate":
+        return _rerank_hits_with_weaviate(hits, query, shard, rerank_k)
+    if source == "lmdb":
+        return _rerank_hits_with_lmdb(hits, query, shard, rerank_k)
+    try:
+        return _rerank_hits_with_lmdb(hits, query, shard, rerank_k)
+    except Exception as exc:
+        print(f"[warn] LMDB rerank unavailable; falling back to Weaviate rerank: {exc}")
+        return _rerank_hits_with_weaviate(hits, query, shard, rerank_k)
 
 
 def _collapse_hits_to_patents(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1018,18 +1071,10 @@ def retrieve_context(
         )
 
     if where_filter and hits:
-        candidate_claim_ids = [
-            str(hit.get("claim_id", "")).strip()
-            for hit in hits
-            if str(hit.get("claim_id", "")).strip()
-        ]
-        candidate_claim_payloads = load_claim_payloads_from_lmdb(candidate_claim_ids)
         candidate_doc_ids: List[str] = []
         seen_candidate_doc_ids = set()
         for hit in hits:
-            claim_id = str(hit.get("claim_id", "")).strip()
-            payload = candidate_claim_payloads.get(claim_id) or {}
-            doc_id = str(hit.get("doc_id", "") or payload.get("doc_id") or "").strip()
+            doc_id = str(hit.get("doc_id", "")).strip()
             if doc_id and doc_id not in seen_candidate_doc_ids:
                 seen_candidate_doc_ids.add(doc_id)
                 candidate_doc_ids.append(doc_id)
@@ -1040,34 +1085,21 @@ def retrieve_context(
             if _matches_where_filter(
                 where_filter,
                 hit,
-                candidate_claim_payloads.get(str(hit.get("claim_id", "")).strip()) or {},
-                candidate_patent_meta.get(
-                    str(
-                        hit.get("doc_id", "")
-                        or (candidate_claim_payloads.get(str(hit.get("claim_id", "")).strip()) or {}).get("doc_id")
-                        or ""
-                    ).strip(),
-                    {},
-                ),
+                {},
+                candidate_patent_meta.get(str(hit.get("doc_id", "")).strip(), {}),
             )
         ]
 
     rerank_window = len(hits) if used_prefilter_batches else effective_rerank_k
-    hits = _rerank_hits_with_lmdb(hits, query.strip(), RERANK_SHARD, rerank_window)
+    hits = _rerank_hits(hits, query.strip(), RERANK_SHARD, rerank_window)
     if effective_search_scope == SEARCH_SCOPE_PATENT:
         hits = _collapse_hits_to_patents(hits)
     hits = hits[:effective_limit]
 
-    claim_payloads = load_claim_payloads_from_lmdb(
-        [str(hit.get("claim_id", "")).strip() for hit in hits if str(hit.get("claim_id", "")).strip()]
-    )
-
     unique_doc_ids = []
     seen_doc_ids = set()
     for hit in hits:
-        claim_id = str(hit.get("claim_id", "")).strip()
-        payload = claim_payloads.get(claim_id) or {}
-        did = str(hit.get("doc_id", "") or payload.get("doc_id") or "").strip()
+        did = str(hit.get("doc_id", "")).strip()
         if did and did not in seen_doc_ids:
             seen_doc_ids.add(did)
             unique_doc_ids.append(did)
@@ -1078,13 +1110,12 @@ def retrieve_context(
     for hit in hits:
         addl = hit.get("_additional") or {}
         claim_id = str(hit.get("claim_id", "")).strip()
-        payload = claim_payloads.get(claim_id) or {}
-        doc_id = str(hit.get("doc_id", "") or payload.get("doc_id") or "").strip()
+        doc_id = str(hit.get("doc_id", "")).strip()
         patent_row = patent_meta.get(doc_id, {})
-        claim_text = rich_to_plain(str(payload.get("text") or hit.get("text") or ""))
+        claim_text = rich_to_plain(str(hit.get("text") or ""))
         text = _preferred_result_text(effective_search_scope, patent_row, claim_text)
         snippet = text[:500]
-        best_claim_type = str(payload.get("claim_type") or hit.get("claim_type") or "")
+        best_claim_type = str(hit.get("claim_type") or "")
 
         # Include SearchItem-compatible fields in metadata for API shaping.
         metadata = {

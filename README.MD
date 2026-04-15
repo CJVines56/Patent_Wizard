@@ -125,7 +125,7 @@ Expected successful output includes:
 Runtime path:
 
 ```text
-Frontend -> FastAPI /api/search -> orchestrator/retriever -> Weaviate + LMDB + local ColBERT model
+Frontend -> FastAPI /api/search -> orchestrator/retriever -> Weaviate-first retrieval/filtering + configurable rerank source + local ColBERT model
 ```
 
 Important files:
@@ -166,7 +166,9 @@ LMDB stores:
 
 Patent metadata note:
 
-- WIP patent-search results read patent metadata from LMDB, not raw XML or the CSV manifest
+- the current frontend/filtering path should not depend on LMDB patent metadata on CJ-style Weaviate-first setups
+- patent/date filtering is intended to run against Weaviate `Patent`, then constrain Weaviate `Claim`
+- older local branches and local-only experiments may still use LMDB for rerank data or metadata overlays
 - patent abstracts only appear in patent-mode results if `abstract_text` was persisted during ingest
 - older local datasets may be missing that field even though the parser extracted the abstract at parse time
 - if patent-mode results are missing abstracts, reingest or backfill patent metadata
@@ -203,6 +205,22 @@ Search API notes:
 - in patent mode, a patent's rank is determined by its highest-ranked claim
 - patent mode currently uses direct retrieval only, not the RAG graph path
 - patent-mode snippets prefer stored patent `abstract_text`; if that metadata is missing, the UI falls back to claim text
+
+Rerank-source note:
+
+- on Christian's local branch, reranking is controlled by `RERANK_SOURCE` in [env](/mnt/c/ECEN_403/Patent_Wizard/backend/orchestrator/env)
+- allowed values are:
+  `lmdb` = force local LMDB reranking
+  `weaviate` = force Weaviate vector reranking
+  `auto` = try LMDB first, then fall back to Weaviate
+- if this repo is being run as Christian's local setup, use `RERANK_SOURCE=lmdb`
+- if this repo is being run in a no-LMDB/CJ-style setup, use `RERANK_SOURCE=weaviate`
+- checked against the latest remote `CJ_Branch` on April 14, 2026: that branch already defaults `RERANK_SOURCE` to `weaviate`, so CJ usually should not switch it to LMDB
+
+Important split:
+
+- filtering and frontend result shaping should not rely on LMDB
+- LMDB is only for local reranking/local experiments on Christian's machine
 
 ## Date Semantics
 
@@ -300,3 +318,5 @@ If filters seem confusing:
 - current date filtering is filing-date based
 - `author` and `classification` are not fully server-backed yet
 - result replacement is implemented for the server-backed filters, not the frontend-only ones
+- if a CJ-style setup does not have LMDB locally, make sure `RERANK_SOURCE=weaviate`
+- if Christian's local setup should keep using LMDB rerank, make sure `RERANK_SOURCE=lmdb`
