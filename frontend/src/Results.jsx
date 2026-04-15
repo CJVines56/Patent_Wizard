@@ -180,7 +180,7 @@ function buildMockResult(query, tuning, searchScope) {
     answer:
       `Preview mode: API unreachable, showing mock data.\n` +
       `${normalizedScope === "patent"
-        ? "WIP patent mode ranks patents by their best matching claim."
+        ? "Patent search ranks patents by their best matching claim."
         : "Claim mode returns individual matching claims."}\n` +
       `Applied tuning -> k=${tuning.k}, k_extra=${tuning.k_extra}, alpha=${tuning.alpha}, ` +
       `retrieval_candidates=${tuning.retrieval_candidates}, rerank_k=${tuning.rerank_k}.`,
@@ -549,11 +549,6 @@ export default function Results() {
         {/* Lightweight status area above the content */}
         <div className="flex flex-col gap-2 items-center">
           {loading && <p className="text-white/80">Searching…</p>}
-          {isPatentResultScope && (
-            <div className="w-full max-w-4xl mx-auto rounded border border-blue-200/40 bg-blue-500/15 px-3 py-2 text-sm text-blue-50">
-              Current results are from WIP patent search. Each patent is ranked by its highest-ranked matching claim.
-            </div>
-          )}
           {error && showErrorBar && (
             <div
               className={`h-12 px-3 rounded bg-red-500/20 border border-red-300/40 text-red-100 flex items-center justify-between transition-opacity duration-300 ${errorBarVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'} w-full max-w-4xl mx-auto`}
@@ -669,14 +664,9 @@ export default function Results() {
                     <SearchScopeSelector value={searchScope} onChange={handleSearchScopeChange} />
                     <p className="text-xs text-white/70 text-center max-w-2xl">
                       {searchScope === "patent"
-                        ? "Next search will use WIP patent mode and return one hit per patent using the best matching claim as the snippet."
+                        ? "Next search will use patent search and return one hit per patent using the best matching claim as the snippet."
                         : "Next search will use claim mode and return the best individual matching claims."}
                     </p>
-                    {searchScope !== resultSearchScope ? (
-                      <p className="text-xs text-white/55 text-center max-w-2xl">
-                        Current results stay in {resultSearchScope} mode until you submit a new query.
-                      </p>
-                    ) : null}
                     <SearchBar
                       onSearch={handleSearch}
                       placeholder="Refine your query..."
@@ -894,9 +884,6 @@ export default function Results() {
                                 {it.filing_date ? (
                                   <p><span className="text-white/60">Filing Date:</span> {formatDateDisplay(it.filing_date)}</p>
                                 ) : null}
-                                {it.kind ? (
-                                  <p><span className="text-white/60">Kind:</span> {it.kind}</p>
-                                ) : null}
                                 {it.doc_id ? (
                                   <p><span className="text-white/60">doc_id:</span> {it.doc_id}</p>
                                 ) : null}
@@ -958,9 +945,6 @@ export default function Results() {
                                     ) : null}
                                     {it.filing_date ? (
                                       <p><span className="text-white/60">Filing Date:</span> {formatDateDisplay(it.filing_date)}</p>
-                                    ) : null}
-                                    {it.kind ? (
-                                      <p><span className="text-white/60">Kind:</span> {it.kind}</p>
                                     ) : null}
                                     {it.doc_id ? (
                                       <p><span className="text-white/60">doc_id:</span> {it.doc_id}</p>
