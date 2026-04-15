@@ -189,3 +189,9 @@ $env:PROJECTION_PATH="C:\path\to\trained_projection.pt"
 - `rerank_source` (`lmdb` or `weaviate`)
 - existing retrieval params (`retrieval_mode`, `hybrid_alpha`, `limit`, `rerank_k`, `filter_missing_qrels`)
 
+Search/runtime note:
+
+- frontend filtering should be Weaviate-based, not LMDB-based
+- for CJ-style/no-LMDB setups, use `RERANK_SOURCE=weaviate`
+- for Christian's local LMDB-backed rerank setup, use `RERANK_SOURCE=lmdb`
+- checked against the latest remote `CJ_Branch` on April 14, 2026: that branch already defaults `RERANK_SOURCE` to `weaviate`
