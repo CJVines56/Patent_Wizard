@@ -14,6 +14,7 @@ class SearchItem(BaseModel):
 
 class SearchResponse(BaseModel):
     query: str
+    search_scope: str = "claim"
     total: int
     page: int
     page_size: int
