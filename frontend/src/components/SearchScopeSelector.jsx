@@ -1,6 +1,6 @@
 const SEARCH_SCOPE_OPTIONS = [
   { value: "claim", label: "Claim Search" },
-  { value: "patent", label: "WIP Patent Search" },
+  { value: "patent", label: "Patent Search" },
 ];
 
 export default function SearchScopeSelector({

@@ -131,7 +131,7 @@ export default function Home() {
         <SearchScopeSelector value={searchScope} onChange={setSearchScope} />
         <p className="text-sm text-white/85 text-center max-w-2xl">
           {isPatentScope
-            ? "WIP patent search returns one result per patent and ranks patents by the highest-ranked matching claim."
+            ? "Patent search returns one result per patent and ranks patents by the highest-ranked matching claim."
             : "Claim search keeps the current behavior and returns the best-matching individual claims."}
         </p>
         <SearchBar
