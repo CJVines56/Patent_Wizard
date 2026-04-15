@@ -7,11 +7,11 @@ import numpy as np
 import requests
 from langchain.tools import tool
 
+from backend.app.env_bootstrap import load_project_env
 from backend.app.services.download import rich_to_plain
 from backend.app.store import (
     LMDB_PATH_128_F16,
     LMDB_PATH_128_F32,
-    iter_patent_metadata_from_lmdb,
     load_claim_payloads_from_lmdb,
     load_colbert_from_lmdb,
     load_patent_metadata_batch_from_lmdb,
@@ -19,7 +19,30 @@ from backend.app.store import (
 )
 from backend.app.vector_config import WEAVIATE_NAMED_VECTOR, assert_128_variant
 
-WEAVIATE_GRAPHQL = os.environ.get("WEAVIATE_GRAPHQL", "http://localhost:8080/v1/graphql")
+load_project_env()
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+_DEFAULT_HTTP_HOST = os.environ.get(
+    "WEAVIATE_HTTP_HOST",
+    os.environ.get("WEAVIATE_LOCAL_HOST", "127.0.0.1"),
+).strip() or "127.0.0.1"
+_DEFAULT_HTTP_PORT = int(
+    os.environ.get(
+        "WEAVIATE_HTTP_PORT",
+        os.environ.get("WEAVIATE_LOCAL_PORT", "8081"),
+    )
+)
+_DEFAULT_HTTP_SCHEME = "https" if _env_bool("WEAVIATE_HTTP_SECURE", False) else "http"
+_DEFAULT_WEAVIATE_HTTP_BASE = f"{_DEFAULT_HTTP_SCHEME}://{_DEFAULT_HTTP_HOST}:{_DEFAULT_HTTP_PORT}"
+
+WEAVIATE_GRAPHQL = os.environ.get("WEAVIATE_GRAPHQL", f"{_DEFAULT_WEAVIATE_HTTP_BASE}/v1/graphql")
 DEFAULT_LIMIT = int(os.environ.get("RETRIEVAL_K", "5"))
 DEFAULT_CANDIDATE_LIMIT = int(os.environ.get("RETRIEVAL_CANDIDATES", str(max(DEFAULT_LIMIT, 400))))
 RERANK_SHARD = assert_128_variant(
@@ -54,6 +77,7 @@ SEARCH_SCOPE_PATENT = "patent"
 PATENT_SCOPE_CANDIDATE_LIMIT_CAP = int(os.environ.get("PATENT_SCOPE_CANDIDATE_LIMIT_CAP", "5000"))
 PATENT_SCOPE_RERANK_K_CAP = int(os.environ.get("PATENT_SCOPE_RERANK_K_CAP", "5000"))
 CLAIM_PREFILTER_DOC_ID_BATCH_SIZE = int(os.environ.get("CLAIM_PREFILTER_DOC_ID_BATCH_SIZE", "200"))
+PATENT_PREFILTER_PAGE_SIZE = int(os.environ.get("PATENT_PREFILTER_PAGE_SIZE", "1000"))
 CLAIM_PREFILTER_FIELDS = {"claim_type"}
 PATENT_PREFILTER_FIELDS = {
     "authors",
@@ -225,6 +249,99 @@ def _build_claim_where(
     if not combined:
         return ""
     return f"where:{combined},"
+
+
+def _filter_value_for_field(field: str, value: Any) -> str:
+    if field == "filing_date":
+        return _normalize_date_filter_value(value)
+    return _normalize_text_filter_value(value)
+
+
+def _patent_filter_condition_to_where_node(field: str, condition: Any) -> str:
+    if isinstance(condition, list):
+        return _combine_where_nodes(
+            "Or",
+            [_patent_filter_condition_to_where_node(field, item) for item in condition],
+        )
+
+    if not isinstance(condition, dict):
+        value = _filter_value_for_field(field, condition)
+        if not value:
+            return ""
+        return "{path:[%s],operator:Equal,valueText:%s}" % (
+            _escape_text(field),
+            _escape_text(value),
+        )
+
+    nodes: List[str] = []
+    options = str(condition.get("$options", "") or "")
+    for op, expected in condition.items():
+        if op == "$options":
+            continue
+        value = _filter_value_for_field(field, expected)
+        if not value:
+            continue
+        if op == "$eq":
+            nodes.append(
+                "{path:[%s],operator:Equal,valueText:%s}" % (
+                    _escape_text(field),
+                    _escape_text(value),
+                )
+            )
+            continue
+        if op in {"$contains", "$regex"}:
+            if op == "$regex":
+                if options not in {"", "i"}:
+                    raise ValueError(f"Unsupported regex options for Weaviate patent prefilter: {options}")
+                simple_pattern = str(expected or "")
+                if re.search(r"[.^$+?{}\[\]\\|()]", simple_pattern):
+                    raise ValueError(f"Unsupported regex for Weaviate patent prefilter: {simple_pattern}")
+            nodes.append(
+                "{path:[%s],operator:Like,valueText:%s}" % (
+                    _escape_text(field),
+                    _escape_text(f"*{value}*"),
+                )
+            )
+            continue
+        if op in {"$gt", "$gte", "$lt", "$lte"}:
+            operator = {
+                "$gt": "GreaterThan",
+                "$gte": "GreaterThanEqual",
+                "$lt": "LessThan",
+                "$lte": "LessThanEqual",
+            }[op]
+            nodes.append(
+                "{path:[%s],operator:%s,valueText:%s}" % (
+                    _escape_text(field),
+                    operator,
+                    _escape_text(value),
+                )
+            )
+            continue
+        raise ValueError(f"Unsupported patent prefilter operator: {op}")
+    return _combine_where_nodes("And", nodes)
+
+
+def _patent_filter_to_where_node(where_filter: Optional[Dict[str, Any]]) -> str:
+    if not where_filter:
+        return ""
+    if "$and" in where_filter:
+        return _combine_where_nodes(
+            "And",
+            [_patent_filter_to_where_node(child) for child in where_filter.get("$and") or []],
+        )
+    if "$or" in where_filter:
+        return _combine_where_nodes(
+            "Or",
+            [_patent_filter_to_where_node(child) for child in where_filter.get("$or") or []],
+        )
+
+    nodes: List[str] = []
+    for field, condition in where_filter.items():
+        if field not in PATENT_PREFILTER_FIELDS:
+            raise ValueError(f"Unsupported patent prefilter field: {field}")
+        nodes.append(_patent_filter_condition_to_where_node(field, condition))
+    return _combine_where_nodes("And", nodes)
 
 
 def _combine_filter_nodes(operator: str, children: List[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
@@ -447,7 +564,7 @@ def _query_claim_rows(retrieval_clause: str, claim_where: str, limit: int) -> Li
         "{ Get { Claim("
         f"{retrieval_clause}"
         f"{claim_where} limit: {int(limit)}"
-        ") { claim_id doc_id _additional { id distance } } } }"
+        ") { claim_id doc_id claim_type text _additional { id distance } } } }"
     )
     data = _post_graphql(gql)
     return data.get("Get", {}).get("Claim", []) or []
@@ -459,10 +576,31 @@ def _query_claim_rows_unranked(claim_where: str, limit: int) -> List[Dict[str, A
     gql = (
         "{ Get { Claim("
         f"{claim_where} limit: {int(limit)}"
-        ") { claim_id doc_id _additional { id } } } }"
+        ") { claim_id doc_id claim_type text _additional { id } } } }"
     )
     data = _post_graphql(gql)
     return data.get("Get", {}).get("Claim", []) or []
+
+
+def _query_patent_rows(
+    patent_where_node: str,
+    *,
+    limit: int,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    args = []
+    if patent_where_node:
+        args.append(f"where:{patent_where_node}")
+    args.append(f"limit:{int(limit)}")
+    if offset:
+        args.append(f"offset:{int(offset)}")
+    gql = (
+        "{ Get { Patent("
+        f"{','.join(args)}"
+        ") { doc_id filing_date classification authors title kind } } }"
+    )
+    data = _post_graphql(gql)
+    return data.get("Get", {}).get("Patent", []) or []
 
 
 def _claim_row_key(hit: Dict[str, Any]) -> str:
@@ -553,6 +691,10 @@ def _resolve_positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     return max(int(minimum), resolved)
 
 
+def _is_missing_metadata_value(value: Any) -> bool:
+    return value is None or value == "" or value == []
+
+
 def _normalize_search_scope(value: str | None) -> str:
     scope = str(value or SEARCH_SCOPE_CLAIM).strip().lower()
     return SEARCH_SCOPE_PATENT if scope == SEARCH_SCOPE_PATENT else SEARCH_SCOPE_CLAIM
@@ -573,7 +715,41 @@ def _patent_rerank_k_default(result_limit: int) -> int:
 
 
 def _fetch_patent_metadata(doc_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    return load_patent_metadata_batch_from_lmdb(doc_ids)
+    ordered_doc_ids: List[str] = []
+    seen = set()
+    for doc_id in doc_ids:
+        value = str(doc_id or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered_doc_ids.append(value)
+    if not ordered_doc_ids:
+        return {}
+
+    rows_by_doc_id: Dict[str, Dict[str, Any]] = {}
+    try:
+        for doc_id_batch in _batched(ordered_doc_ids, CLAIM_PREFILTER_DOC_ID_BATCH_SIZE):
+            patent_where_node = _build_doc_id_where_node(doc_id_batch)
+            for row in _query_patent_rows(patent_where_node, limit=max(1, len(doc_id_batch))):
+                doc_id = str(row.get("doc_id") or "").strip()
+                if doc_id:
+                    rows_by_doc_id[doc_id] = row
+    except Exception as exc:
+        print(f"[warn] patent metadata fetch from Weaviate failed; using LMDB fallback: {exc}")
+
+    for doc_id, overlay in load_patent_metadata_batch_from_lmdb(ordered_doc_ids).items():
+        merged = dict(rows_by_doc_id.get(doc_id) or {})
+        for key, value in (overlay or {}).items():
+            if key in {"abstract", "abstract_text"}:
+                if value:
+                    merged[key] = value
+                continue
+            if _is_missing_metadata_value(merged.get(key)) and not _is_missing_metadata_value(value):
+                merged[key] = value
+        if merged:
+            rows_by_doc_id[doc_id] = merged
+
+    return rows_by_doc_id
 
 
 def _prefilter_doc_ids_from_patent_metadata(where_filter: Optional[Dict[str, Any]]) -> Optional[List[str]]:
@@ -581,14 +757,39 @@ def _prefilter_doc_ids_from_patent_metadata(where_filter: Optional[Dict[str, Any
         return None
     doc_ids: List[str] = []
     seen = set()
-    for patent_row in iter_patent_metadata_from_lmdb():
-        if not _matches_where_filter(where_filter, {}, {}, patent_row):
-            continue
-        doc_id = str(patent_row.get("doc_id") or "").strip()
-        if not doc_id or doc_id in seen:
-            continue
-        seen.add(doc_id)
-        doc_ids.append(doc_id)
+    page_size = max(1, int(PATENT_PREFILTER_PAGE_SIZE))
+    try:
+        patent_where_node = _patent_filter_to_where_node(where_filter)
+        offset = 0
+        while True:
+            rows = _query_patent_rows(patent_where_node, limit=page_size, offset=offset)
+            for patent_row in rows:
+                doc_id = str(patent_row.get("doc_id") or "").strip()
+                if not doc_id or doc_id in seen:
+                    continue
+                seen.add(doc_id)
+                doc_ids.append(doc_id)
+            if len(rows) < page_size:
+                break
+            offset += page_size
+        return doc_ids
+    except Exception as exc:
+        print(f"[warn] Weaviate patent prefilter query failed; falling back to full patent scan: {exc}")
+
+    offset = 0
+    while True:
+        rows = _query_patent_rows("", limit=page_size, offset=offset)
+        for patent_row in rows:
+            if not _matches_where_filter(where_filter, {}, {}, patent_row):
+                continue
+            doc_id = str(patent_row.get("doc_id") or "").strip()
+            if not doc_id or doc_id in seen:
+                continue
+            seen.add(doc_id)
+            doc_ids.append(doc_id)
+        if len(rows) < page_size:
+            break
+        offset += page_size
     return doc_ids
 
 
@@ -880,10 +1081,10 @@ def retrieve_context(
         payload = claim_payloads.get(claim_id) or {}
         doc_id = str(hit.get("doc_id", "") or payload.get("doc_id") or "").strip()
         patent_row = patent_meta.get(doc_id, {})
-        claim_text = rich_to_plain(str(payload.get("text") or ""))
+        claim_text = rich_to_plain(str(payload.get("text") or hit.get("text") or ""))
         text = _preferred_result_text(effective_search_scope, patent_row, claim_text)
         snippet = text[:500]
-        best_claim_type = str(payload.get("claim_type") or "")
+        best_claim_type = str(payload.get("claim_type") or hit.get("claim_type") or "")
 
         # Include SearchItem-compatible fields in metadata for API shaping.
         metadata = {
