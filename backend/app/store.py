@@ -184,6 +184,8 @@ def _env_optional_int(name: str) -> int | None:
 WEAVIATE_MUVERA_KSIM = _env_optional_int("WEAVIATE_MUVERA_KSIM")
 WEAVIATE_MUVERA_DPROJECTIONS = _env_optional_int("WEAVIATE_MUVERA_DPROJECTIONS")
 WEAVIATE_MUVERA_REPETITIONS = _env_optional_int("WEAVIATE_MUVERA_REPETITIONS")
+WEAVIATE_PATENT_SHARD_COUNT = max(1, int(os.environ.get("WEAVIATE_PATENT_SHARD_COUNT", "3")))
+WEAVIATE_CLAIM_SHARD_COUNT = max(1, int(os.environ.get("WEAVIATE_CLAIM_SHARD_COUNT", "3")))
 
 
 def _util_shard_from_doc_id(doc_id: str | None) -> str | None:
@@ -1027,6 +1029,12 @@ def _claim_muvera_encoding(muvera_params: dict | None = None):
     return Configure.VectorIndex.MultiVector.Encoding.muvera(**kwargs)
 
 
+def _collection_sharding_config(desired_count: int | None):
+    if desired_count is None:
+        return None
+    return Configure.sharding(desired_count=max(1, int(desired_count)))
+
+
 def _claim_hnsw_create_config(pq_params: dict | None = None):
     pq = _resolved_pq_params(pq_params)
     vector_cache_max_objects = (
@@ -1137,6 +1145,8 @@ def ensure_collection(
     muvera_params: dict | None = None,
     pq_params: dict | None = None,
     update_existing_claim_hnsw: bool = True,
+    patent_shard_count: int = WEAVIATE_PATENT_SHARD_COUNT,
+    claim_shard_count: int = WEAVIATE_CLAIM_SHARD_COUNT,
 ):
     existing = client.collections.list_all()
     claim_existed = "Claim" in existing
@@ -1150,12 +1160,31 @@ def ensure_collection(
         Property(name="kind", data_type=DataType.TEXT),
     ]
     if "Patent" not in existing:
-        client.collections.create(
+        patent_create_kwargs = dict(
             name="Patent",
             vectorizer_config=Configure.Vectorizer.none(),
             properties=patent_props,
         )
-        print("Created collection: Patent")
+        patent_sharding_config = _collection_sharding_config(patent_shard_count)
+        if patent_sharding_config is not None:
+            patent_create_kwargs["sharding_config"] = patent_sharding_config
+        try:
+            client.collections.create(**patent_create_kwargs)
+            print(
+                f"Created collection: Patent"
+                + (
+                    f" (shards={max(1, int(patent_shard_count))})"
+                    if patent_sharding_config is not None
+                    else ""
+                )
+            )
+        except TypeError:
+            patent_create_kwargs.pop("sharding_config", None)
+            client.collections.create(**patent_create_kwargs)
+            print(
+                "Created collection: Patent "
+                "(warning: sharding_config not supported by this weaviate-client version)"
+            )
     else:
         print("Collection Patent already exists")
         _ensure_collection_properties(client, "Patent", patent_props)
@@ -1168,8 +1197,9 @@ def ensure_collection(
         Property(name="text", data_type=DataType.TEXT),
     ]
     if "Claim" not in existing:
+        claim_sharding_config = _collection_sharding_config(claim_shard_count)
         try:
-            client.collections.create(
+            claim_create_kwargs = dict(
                 name="Claim",
                 properties=claim_props,
                 vector_config=[
@@ -1180,16 +1210,46 @@ def ensure_collection(
                     ),
                 ],
             )
-            print("Created collection: Claim")
+            if claim_sharding_config is not None:
+                claim_create_kwargs["sharding_config"] = claim_sharding_config
+            try:
+                client.collections.create(**claim_create_kwargs)
+                print(
+                    f"Created collection: Claim"
+                    + (
+                        f" (shards={max(1, int(claim_shard_count))})"
+                        if claim_sharding_config is not None
+                        else ""
+                    )
+                )
+            except TypeError:
+                claim_create_kwargs.pop("sharding_config", None)
+                client.collections.create(**claim_create_kwargs)
+                print(
+                    "Created collection: Claim "
+                    "(warning: sharding_config not supported by this weaviate-client version)"
+                )
         except TypeError:
-            client.collections.create(
+            legacy_claim_kwargs = dict(
                 name="Claim",
                 vectorizer_config=Configure.Vectorizer.none(),
                 properties=claim_props,
             )
+            if claim_sharding_config is not None:
+                legacy_claim_kwargs["sharding_config"] = claim_sharding_config
+            try:
+                client.collections.create(**legacy_claim_kwargs)
+            except TypeError:
+                legacy_claim_kwargs.pop("sharding_config", None)
+                client.collections.create(**legacy_claim_kwargs)
             print(
                 "Created collection: Claim (warning: vector_config not supported by this "
                 "weaviate-client version; MUVERA multi-vector config not applied)"
+                + (
+                    " and sharding_config not supported"
+                    if claim_sharding_config is not None and "sharding_config" not in legacy_claim_kwargs
+                    else ""
+                )
             )
     else:
         print("Collection Claim already exists")
@@ -1204,6 +1264,8 @@ def reset_weaviate_state(
     reset_collections: tuple[str, ...] = PARAMETER_SWEEP_RESET_COLLECTIONS,
     muvera_params: dict | None = None,
     pq_params: dict | None = None,
+    patent_shard_count: int = WEAVIATE_PATENT_SHARD_COUNT,
+    claim_shard_count: int = WEAVIATE_CLAIM_SHARD_COUNT,
 ) -> tuple[str, ...]:
     """
     Reset Patent and Claim for parameter sweeps.
@@ -1225,6 +1287,8 @@ def reset_weaviate_state(
             muvera_params=muvera_params,
             pq_params=pq_params,
             update_existing_claim_hnsw=False,
+            patent_shard_count=patent_shard_count,
+            claim_shard_count=claim_shard_count,
         )
         return tuple(deleted)
     finally:
@@ -1238,6 +1302,8 @@ def store_embeddings(
     pq_params: dict | None = None,
     write_lmdb: bool | None = None,
     skip_existing: bool = False,
+    patent_shard_count: int = WEAVIATE_PATENT_SHARD_COUNT,
+    claim_shard_count: int = WEAVIATE_CLAIM_SHARD_COUNT,
 ):
     client = get_client()
     lmdb_envs_by_path: dict[Path, lmdb.Environment] = {}
@@ -1247,6 +1313,8 @@ def store_embeddings(
             muvera_params=muvera_params,
             pq_params=pq_params,
             update_existing_claim_hnsw=False,
+            patent_shard_count=patent_shard_count,
+            claim_shard_count=claim_shard_count,
         )
         claim_collection = client.collections.get("Claim")
         patent_collection = client.collections.get("Patent")

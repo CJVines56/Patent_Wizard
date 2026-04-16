@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import time
 from datetime import datetime, timedelta
@@ -9,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from backend.app.embed import embed_chunks, model, tokenizer
-from backend.app.services.download import _dataset_file_base, bulk_dataset_download, output_file as DOWNLOAD_DIR
+from backend.app.services.download import (
+    _dataset_file_base,
+    _delete_dataset_archives,
+    bulk_dataset_download,
+    output_file as DOWNLOAD_DIR,
+)
 from backend.app.store import (
     dataset_embedding_entry_count,
     filter_new_dataset_embedding_records,
@@ -55,6 +61,93 @@ def _dataset_context(input_date: str, *, download_path: Path, dataset_product: s
         "dataset_product": product_upper,
         "expected_archive_name": f"{dataset_id}{ext_hint}",
     }
+
+
+def _normalize_issue_identifiers(values: list[str], *, source_label: str) -> list[str]:
+    dates: list[str] = []
+    for raw_value in values:
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        if re.fullmatch(r"I\d{8}", value):
+            dates.append(f"{value[1:5]}-{value[5:7]}-{value[7:9]}")
+            continue
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            dates.append(value)
+            continue
+        raise SystemExit(
+            f"{source_label} currently supports weekly issue IDs like I20250902 "
+            f"or ISO dates like 2025-09-02 only. Got: {value}"
+        )
+    return dates
+
+
+def _load_dataset_identifiers_from_file(path: Path, *, key: str | None) -> list[str]:
+    raw_text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".json":
+        payload = json.loads(raw_text)
+        if isinstance(payload, list):
+            return [str(item or "").strip() for item in payload if str(item or "").strip()]
+        if isinstance(payload, dict):
+            candidate_key = str(key or "").strip()
+            if candidate_key:
+                selected = payload.get(candidate_key)
+                if not isinstance(selected, list):
+                    raise SystemExit(
+                        f"--dataset-ids-key '{candidate_key}' was not found as a list in {path}."
+                    )
+                return [str(item or "").strip() for item in selected if str(item or "").strip()]
+            for fallback_key in ("dataset_ids", "missing_dataset_ids", "missing_complete_dataset_ids"):
+                selected = payload.get(fallback_key)
+                if isinstance(selected, list):
+                    return [str(item or "").strip() for item in selected if str(item or "").strip()]
+            list_keys = [
+                str(name)
+                for name, value in payload.items()
+                if isinstance(name, str) and isinstance(value, list)
+            ]
+            if len(list_keys) == 1:
+                selected = payload[list_keys[0]]
+                return [str(item or "").strip() for item in selected if str(item or "").strip()]
+            raise SystemExit(
+                f"{path} contains multiple list fields. Pass --dataset-ids-key to choose one."
+            )
+        raise SystemExit(f"Unsupported JSON structure in {path}. Expected list or object.")
+    tokens: list[str] = []
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for part in stripped.split(","):
+            token = part.strip()
+            if token:
+                tokens.append(token)
+    return tokens
+
+
+def _resolve_input_dates(
+    start_date: str,
+    num_datasets: int,
+    dataset_ids_raw: str,
+    dataset_ids_file: Path | None,
+    dataset_ids_key: str | None,
+) -> list[str]:
+    explicit = [part.strip() for part in str(dataset_ids_raw or "").split(",") if part.strip()]
+    if explicit:
+        return _normalize_issue_identifiers(explicit, source_label="--dataset-ids")
+    if dataset_ids_file is not None:
+        identifiers = _load_dataset_identifiers_from_file(Path(dataset_ids_file).resolve(), key=dataset_ids_key)
+        resolved = _normalize_issue_identifiers(
+            identifiers,
+            source_label="--dataset-ids-file",
+        )
+        if not resolved:
+            raise SystemExit(f"--dataset-ids-file {dataset_ids_file} did not yield any dataset identifiers.")
+        return resolved
+    dates = _build_weekly_dates(start_date, num_datasets)
+    if not dates:
+        raise SystemExit("--num-datasets must be >= 1.")
+    return dates
 
 
 def _summarize_existing_dataset(embeddings_path: Path) -> dict[str, Any]:
@@ -146,6 +239,7 @@ def export_dataset(
     max_patents: int | None,
     overwrite: bool,
     master_manifest_csv: Path | None,
+    delete_archive_after_embed: bool,
 ) -> dict[str, Any]:
     ctx = _dataset_context(
         input_date,
@@ -333,6 +427,9 @@ def export_dataset(
     _json_dump(manifest_path, manifest)
     if partial_manifest_path.exists():
         partial_manifest_path.unlink()
+    if delete_archive_after_embed:
+        _delete_dataset_archives(input_date, download_path, dataset_product)
+        print(f"[phase1] Deleted downloaded archive for {dataset_id}")
     print(f"[phase1] Wrote dataset {dataset_id} manifest: {manifest_path}")
     print(f"[phase1] Wrote dataset {dataset_id} LMDB: {embeddings_path}")
     return manifest
@@ -344,12 +441,39 @@ def main() -> None:
     )
     parser.add_argument("--start-date", type=str, default="2025-09-02")
     parser.add_argument("--num-datasets", type=int, default=4)
+    parser.add_argument(
+        "--dataset-ids",
+        type=str,
+        default="",
+        help="Optional comma-separated weekly dataset IDs like I20250902,I20250826.",
+    )
+    parser.add_argument(
+        "--dataset-ids-file",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to a JSON or text file containing weekly issue IDs or dates. "
+            "Use --dataset-ids-key when the JSON file contains multiple dataset lists."
+        ),
+    )
+    parser.add_argument(
+        "--dataset-ids-key",
+        type=str,
+        default="",
+        help="Optional JSON key to read from --dataset-ids-file.",
+    )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--download-path", type=Path, default=DOWNLOAD_DIR)
     parser.add_argument("--dataset-product", type=str, default="PTGRDT")
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--max-patents", type=int, default=0, help="0 means no cap.")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--delete-archive-after-embed",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Delete the downloaded USPTO archive after a dataset finishes embedding successfully.",
+    )
     parser.add_argument(
         "--master-manifest-csv",
         type=Path,
@@ -361,13 +485,17 @@ def main() -> None:
     output_root = Path(args.output_root).resolve()
     download_path = Path(args.download_path).resolve()
     max_patents = None if int(args.max_patents) <= 0 else int(args.max_patents)
-    dates = _build_weekly_dates(args.start_date, args.num_datasets)
-    if not dates:
-        raise SystemExit("--num-datasets must be >= 1.")
+    dates = _resolve_input_dates(
+        args.start_date,
+        int(args.num_datasets),
+        args.dataset_ids,
+        args.dataset_ids_file,
+        args.dataset_ids_key,
+    )
 
     print(
-        f"[phase1] start_date={args.start_date} num_datasets={args.num_datasets} "
-        f"output_root={output_root}"
+        f"[phase1] output_root={output_root} dataset_count={len(dates)} "
+        f"datasets={','.join(dates[:20])}" + (",..." if len(dates) > 20 else "")
     )
     manifests: list[dict[str, Any]] = []
     overall_start = time.perf_counter()
@@ -382,6 +510,7 @@ def main() -> None:
                 max_patents=max_patents,
                 overwrite=bool(args.overwrite),
                 master_manifest_csv=args.master_manifest_csv,
+                delete_archive_after_embed=bool(args.delete_archive_after_embed),
             )
         )
 

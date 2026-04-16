@@ -53,6 +53,11 @@ def _storage_dataset_id(target: dict[str, Any], *, include_full_issue: bool) -> 
     return base
 
 
+def _expected_archive_ext(dataset_product: str) -> str:
+    product_upper = str(dataset_product or "").strip().upper()
+    return ".tar" if product_upper == "PTGRDT" else ".zip"
+
+
 def _parse_set_ids(raw: str) -> set[str] | None:
     values = {part.strip() for part in str(raw or "").split(",") if part.strip()}
     return values or None
@@ -157,7 +162,7 @@ def _build_target_manifest(
         "canonical_dataset_date": target["issue_date"],
         "input_date": target["issue_date"],
         "dataset_product": target["dataset_product"],
-        "expected_archive_name": f"{target['archive_stem']}.zip",
+        "expected_archive_name": f"{target['archive_stem']}{_expected_archive_ext(target['dataset_product'])}",
         "source_archive_stem": target["archive_stem"],
         "dataset_dir": str(dataset_dir.resolve()),
         "dataset_lmdb_path": str(embeddings_path.resolve()),
@@ -407,7 +412,7 @@ def export_selected_target(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Precompute embeddings for specific historical grant issues/doc IDs into per-dataset LMDB directories."
+        description="Precompute embeddings for specific historical grant or application issues/doc IDs into per-dataset LMDB directories."
     )
     parser.add_argument("--spec-file", type=Path, default=DEFAULT_SPEC_PATH)
     parser.add_argument("--set-ids", type=str, default="")
@@ -458,7 +463,7 @@ def main() -> None:
     run_manifest = {
         "schema_version": 1,
         "created_at": datetime.now().astimezone().isoformat(),
-        "phase": "precompute_selected_grant_issues",
+        "phase": "precompute_selected_patent_issues",
         "spec_file": str(spec_path),
         "set_ids": sorted(set_ids) if set_ids else [],
         "output_root": str(output_root),

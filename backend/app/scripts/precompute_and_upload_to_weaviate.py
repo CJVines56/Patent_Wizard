@@ -55,17 +55,87 @@ def _load_json_if_exists(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _resolve_input_dates(start_date: str, num_datasets: int, dataset_ids_raw: str) -> list[str]:
+def _normalize_issue_identifiers(values: list[str], *, source_label: str) -> list[str]:
+    dates: list[str] = []
+    for raw_value in values:
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        if re.fullmatch(r"I\d{8}", value):
+            dates.append(f"{value[1:5]}-{value[5:7]}-{value[7:9]}")
+            continue
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            dates.append(value)
+            continue
+        raise SystemExit(
+            f"{source_label} currently supports weekly issue IDs like I20250902 "
+            f"or ISO dates like 2025-09-02 only. Got: {value}"
+        )
+    return dates
+
+
+def _load_dataset_identifiers_from_file(path: Path, *, key: str | None) -> list[str]:
+    raw_text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".json":
+        payload = json.loads(raw_text)
+        if isinstance(payload, list):
+            return [str(item or "").strip() for item in payload if str(item or "").strip()]
+        if isinstance(payload, dict):
+            candidate_key = str(key or "").strip()
+            if candidate_key:
+                selected = payload.get(candidate_key)
+                if not isinstance(selected, list):
+                    raise SystemExit(
+                        f"--dataset-ids-key '{candidate_key}' was not found as a list in {path}."
+                    )
+                return [str(item or "").strip() for item in selected if str(item or "").strip()]
+            for fallback_key in ("dataset_ids", "missing_dataset_ids", "missing_complete_dataset_ids"):
+                selected = payload.get(fallback_key)
+                if isinstance(selected, list):
+                    return [str(item or "").strip() for item in selected if str(item or "").strip()]
+            list_keys = [
+                str(name)
+                for name, value in payload.items()
+                if isinstance(name, str) and isinstance(value, list)
+            ]
+            if len(list_keys) == 1:
+                selected = payload[list_keys[0]]
+                return [str(item or "").strip() for item in selected if str(item or "").strip()]
+            raise SystemExit(
+                f"{path} contains multiple list fields. Pass --dataset-ids-key to choose one."
+            )
+        raise SystemExit(f"Unsupported JSON structure in {path}. Expected list or object.")
+    tokens: list[str] = []
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for part in stripped.split(","):
+            token = part.strip()
+            if token:
+                tokens.append(token)
+    return tokens
+
+
+def _resolve_input_dates(
+    start_date: str,
+    num_datasets: int,
+    dataset_ids_raw: str,
+    dataset_ids_file: Path | None,
+    dataset_ids_key: str | None,
+) -> list[str]:
     explicit = [part.strip() for part in str(dataset_ids_raw or "").split(",") if part.strip()]
     if explicit:
-        dates: list[str] = []
-        for dataset_id in explicit:
-            if not re.fullmatch(r"I\d{8}", dataset_id):
-                raise SystemExit(
-                    "--dataset-ids currently supports weekly issue IDs like I20250902 only."
-                )
-            dates.append(f"{dataset_id[1:5]}-{dataset_id[5:7]}-{dataset_id[7:9]}")
-        return dates
+        return _normalize_issue_identifiers(explicit, source_label="--dataset-ids")
+    if dataset_ids_file is not None:
+        identifiers = _load_dataset_identifiers_from_file(Path(dataset_ids_file).resolve(), key=dataset_ids_key)
+        resolved = _normalize_issue_identifiers(
+            identifiers,
+            source_label="--dataset-ids-file",
+        )
+        if not resolved:
+            raise SystemExit(f"--dataset-ids-file {dataset_ids_file} did not yield any dataset identifiers.")
+        return resolved
     dates = _build_weekly_dates(start_date, num_datasets)
     if not dates:
         raise SystemExit("--num-datasets must be >= 1.")
@@ -101,21 +171,39 @@ def _default_manifest_path(
     return (DEFAULT_PIPELINE_RUNS_DIR / name).resolve()
 
 
-def _load_existing_complete_manifest(output_root: Path, dataset_id: str) -> dict[str, Any] | None:
-    manifest_path = output_root / dataset_id / "manifest.json"
-    if not manifest_path.exists():
-        return None
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if str(payload.get("canonical_dataset_id") or "").strip() != dataset_id:
-        return None
-    if str(payload.get("status") or "").strip().lower() != "complete":
-        return None
-    return payload
+def _candidate_lookup_roots(output_root: Path, existing_output_roots: list[Path]) -> list[Path]:
+    ordered: list[Path] = []
+    seen: set[str] = set()
+    for root in [output_root, *existing_output_roots]:
+        resolved = Path(root).resolve()
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(resolved)
+    return ordered
+
+
+def _load_existing_complete_manifest(
+    lookup_roots: list[Path],
+    dataset_id: str,
+) -> tuple[dict[str, Any] | None, Path | None]:
+    for output_root in lookup_roots:
+        manifest_path = output_root / dataset_id / "manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("canonical_dataset_id") or "").strip() != dataset_id:
+            continue
+        if str(payload.get("status") or "").strip().lower() != "complete":
+            continue
+        return payload, output_root
+    return None, None
 
 
 def _hydrate_dataset_manifest(manifest: dict[str, Any], *, output_root: Path) -> dict[str, Any]:
@@ -208,11 +296,13 @@ def _build_run_manifest(
     started_at: str,
     completed: bool,
     output_root: Path,
+    existing_output_roots: list[Path],
     download_path: Path,
     dataset_range: dict[str, Any],
     dataset_product: str,
     precompute_batch_size: int,
     upload_batch_size: int,
+    delete_archive_after_embed: bool,
     max_patents: int | None,
     overwrite: bool,
     muvera_params: dict[str, Any],
@@ -236,12 +326,14 @@ def _build_run_manifest(
         "updated_at": datetime.now().astimezone().isoformat(),
         "completed": bool(completed),
         "output_root": str(output_root),
+        "existing_output_roots": [str(root) for root in existing_output_roots],
         "download_path": str(download_path),
         "dataset": dataset_range,
         "parameters": {
             "dataset_product": dataset_product,
             "precompute_batch_size": int(precompute_batch_size),
             "upload_batch_size": int(upload_batch_size),
+            "delete_archive_after_embed": bool(delete_archive_after_embed),
             "max_patents": None if max_patents is None else int(max_patents),
             "overwrite": bool(overwrite),
             "skip_existing": bool(skip_existing),
@@ -287,11 +379,42 @@ def main() -> None:
         default="",
         help="Optional comma-separated weekly dataset IDs like I20250902,I20250826.",
     )
+    parser.add_argument(
+        "--dataset-ids-file",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to a JSON or text file containing weekly issue IDs or dates. "
+            "Use --dataset-ids-key when the JSON file contains multiple dataset lists."
+        ),
+    )
+    parser.add_argument(
+        "--dataset-ids-key",
+        type=str,
+        default="",
+        help="Optional JSON key to read from --dataset-ids-file.",
+    )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_PRECOMPUTE_ROOT)
+    parser.add_argument(
+        "--existing-output-root",
+        type=Path,
+        nargs="*",
+        default=[],
+        help=(
+            "Optional read-only roots to scan for already precomputed datasets. "
+            "Use this when moving new writes to a different disk but reusing old precompute outputs."
+        ),
+    )
     parser.add_argument("--download-path", type=Path, default=DOWNLOAD_DIR)
     parser.add_argument("--dataset-product", type=str, default="PTGRDT")
     parser.add_argument("--precompute-batch-size", type=int, default=512)
     parser.add_argument("--upload-batch-size", type=int, default=256)
+    parser.add_argument(
+        "--delete-archive-after-embed",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Delete the downloaded USPTO archive after a dataset finishes embedding successfully.",
+    )
     parser.add_argument("--max-patents", type=int, default=0, help="0 means no cap.")
     parser.add_argument("--overwrite", action="store_true", help="Rebuild local LMDBs even if they already exist.")
     parser.add_argument("--reset", action="store_true", help="Delete/recreate Patent and Claim before upload.")
@@ -323,9 +446,17 @@ def main() -> None:
     args = parser.parse_args()
 
     output_root = Path(args.output_root).resolve()
+    existing_output_roots = [Path(root).resolve() for root in (args.existing_output_root or [])]
+    lookup_roots = _candidate_lookup_roots(output_root, existing_output_roots)
     download_path = Path(args.download_path).resolve()
     max_patents = None if int(args.max_patents) <= 0 else int(args.max_patents)
-    input_dates = _resolve_input_dates(args.start_date, int(args.num_datasets), args.dataset_ids)
+    input_dates = _resolve_input_dates(
+        args.start_date,
+        int(args.num_datasets),
+        args.dataset_ids,
+        args.dataset_ids_file,
+        args.dataset_ids_key,
+    )
     expected_dataset_ids = _expected_dataset_ids(
         input_dates,
         download_path=download_path,
@@ -368,6 +499,11 @@ def main() -> None:
         f"precompute_batch={int(args.precompute_batch_size)} upload_batch={int(args.upload_batch_size)} "
         f"mode=dataset_pipelined"
     )
+    if existing_output_roots:
+        print(
+            "[pipeline] existing_output_roots="
+            + ",".join(str(root) for root in existing_output_roots)
+        )
 
     overall_start = time.perf_counter()
     precompute_seconds = 0.0
@@ -426,11 +562,13 @@ def main() -> None:
             started_at=started_at,
             completed=completed,
             output_root=output_root,
+            existing_output_roots=existing_output_roots,
             download_path=download_path,
             dataset_range=dataset_range,
             dataset_product=args.dataset_product,
             precompute_batch_size=int(args.precompute_batch_size),
             upload_batch_size=int(args.upload_batch_size),
+            delete_archive_after_embed=bool(args.delete_archive_after_embed),
             max_patents=max_patents,
             overwrite=bool(args.overwrite),
             muvera_params=muvera_params,
@@ -501,11 +639,17 @@ def main() -> None:
         return None
 
     for input_date, dataset_id in zip(input_dates, expected_dataset_ids):
-        existing_local_manifest = None if args.overwrite else _load_existing_complete_manifest(output_root, dataset_id)
-        if existing_local_manifest is not None:
+        existing_local_manifest = None
+        existing_manifest_root = None
+        if not args.overwrite:
+            existing_local_manifest, existing_manifest_root = _load_existing_complete_manifest(
+                lookup_roots,
+                dataset_id,
+            )
+        if existing_local_manifest is not None and existing_manifest_root is not None:
             local_manifests_by_id[dataset_id] = _hydrate_dataset_manifest(
                 existing_local_manifest,
-                output_root=output_root,
+                output_root=existing_manifest_root,
             )
             if _dataset_needs_upload(dataset_id):
                 upload_backlog_ids.append(dataset_id)
@@ -553,6 +697,7 @@ def main() -> None:
                     max_patents=max_patents,
                     overwrite=bool(args.overwrite),
                     master_manifest_csv=args.master_manifest_csv,
+                    delete_archive_after_embed=bool(args.delete_archive_after_embed),
                 )
                 dataset_manifest = _hydrate_dataset_manifest(
                     dataset_manifest,

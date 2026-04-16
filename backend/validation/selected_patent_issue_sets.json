@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "type": "selected_patent_issue_targets",
+  "dataset_product": "PTGRXML",
+  "targets": [
+    {
+      "set_id": "1",
+      "dataset_id": "ipg161101_9485176_OG",
+      "issue_date": "2016-11-01",
+      "archive_stem": "ipg161101",
+      "doc_ids": ["9485176"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 11-01-2016 - 11-01-2016"
+    },
+    {
+      "set_id": "1",
+      "dataset_id": "ipa060406_20060072543_ART",
+      "issue_date": "2006-04-06",
+      "archive_stem": "ipa060406",
+      "doc_ids": ["20060072543"],
+      "dataset_product": "APPXML",
+      "label": "APP 04-06-2006 - 04-06-2006"
+    },
+    {
+      "set_id": "1",
+      "dataset_id": "pa040212_20040028064_ART",
+      "issue_date": "2004-02-12",
+      "archive_stem": "pa040212",
+      "doc_ids": ["20040028064"],
+      "dataset_product": "APPXML",
+      "label": "APP 02-12-2004 - 02-12-2004"
+    },
+    {
+      "set_id": "2",
+      "dataset_id": "ipg200804_10735320_OG",
+      "issue_date": "2020-08-04",
+      "archive_stem": "ipg200804",
+      "doc_ids": ["10735320"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 08-04-2020 - 08-04-2020"
+    },
+    {
+      "set_id": "2",
+      "dataset_id": "ipg090113_7477657_ART",
+      "issue_date": "2009-01-13",
+      "archive_stem": "ipg090113",
+      "doc_ids": ["7477657"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 01-13-2009 - 01-13-2009"
+    },
+    {
+      "set_id": "3",
+      "dataset_id": "ipg140715_8780887_OG",
+      "issue_date": "2014-07-15",
+      "archive_stem": "ipg140715",
+      "doc_ids": ["8780887"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 07-15-2014 - 07-15-2014"
+    },
+    {
+      "set_id": "3",
+      "dataset_id": "ipa070705_20070157303_ART",
+      "issue_date": "2007-07-05",
+      "archive_stem": "ipa070705",
+      "doc_ids": ["20070157303"],
+      "dataset_product": "APPXML",
+      "label": "APP 07-05-2007 - 07-05-2007"
+    },
+    {
+      "set_id": "4",
+      "dataset_id": "ipg180710_10020961_OG",
+      "issue_date": "2018-07-10",
+      "archive_stem": "ipg180710",
+      "doc_ids": ["10020961"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 07-10-2018 - 07-10-2018"
+    },
+    {
+      "set_id": "4",
+      "dataset_id": "ipa150528_20150146727_ART",
+      "issue_date": "2015-05-28",
+      "archive_stem": "ipa150528",
+      "doc_ids": ["20150146727"],
+      "dataset_product": "APPXML",
+      "label": "APP 05-28-2015 - 05-28-2015"
+    },
+    {
+      "set_id": "5",
+      "dataset_id": "ipg200421_10630505_OG",
+      "issue_date": "2020-04-21",
+      "archive_stem": "ipg200421",
+      "doc_ids": ["10630505"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 04-21-2020 - 04-21-2020"
+    },
+    {
+      "set_id": "5",
+      "dataset_id": "ipg190108_10177957_ART",
+      "issue_date": "2019-01-08",
+      "archive_stem": "ipg190108",
+      "doc_ids": ["10177957"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 01-08-2019 - 01-08-2019"
+    },
+    {
+      "set_id": "5",
+      "dataset_id": "pg021231_6502135_ART_ISSUE",
+      "issue_date": "2002-12-31",
+      "archive_stem": "pg021231",
+      "doc_ids": ["6502135"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 12-31-2002 - 12-31-2002",
+      "note": "Target may not be present in the issue archive."
+    },
+    {
+      "set_id": "5",
+      "dataset_id": "ipa141204_20140359704_ART",
+      "issue_date": "2014-12-04",
+      "archive_stem": "ipa141204",
+      "doc_ids": ["20140359704"],
+      "dataset_product": "APPXML",
+      "label": "APP 12-04-2014 - 12-04-2014"
+    },
+    {
+      "set_id": "6",
+      "dataset_id": "ipg210831_11108595_OG",
+      "issue_date": "2021-08-31",
+      "archive_stem": "ipg210831",
+      "doc_ids": ["11108595"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 08-31-2021 - 08-31-2021"
+    },
+    {
+      "set_id": "6",
+      "dataset_id": "ipa100617_20100153558_ART",
+      "issue_date": "2010-06-17",
+      "archive_stem": "ipa100617",
+      "doc_ids": ["20100153558"],
+      "dataset_product": "APPXML",
+      "label": "APP 06-17-2010 - 06-17-2010"
+    },
+    {
+      "set_id": "7",
+      "dataset_id": "ipg170912_9762397_OG",
+      "issue_date": "2017-09-12",
+      "archive_stem": "ipg170912",
+      "doc_ids": ["9762397"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 09-12-2017 - 09-12-2017"
+    },
+    {
+      "set_id": "7",
+      "dataset_id": "ipg060606_7058973_ART",
+      "issue_date": "2006-06-06",
+      "archive_stem": "ipg060606",
+      "doc_ids": ["7058973"],
+      "dataset_product": "PTGRXML",
+      "label": "GRANT 06-06-2006 - 06-06-2006"
+    }
+  ]
+}
