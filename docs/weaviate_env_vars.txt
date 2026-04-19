@@ -1,0 +1,150 @@
+Patent Wizard - Weaviate Environment Variables
+Generated: 2026-03-19
+
+This file centralizes Weaviate-related environment variables used in the codebase.
+There is currently no tracked backend .env file; these are read from process env or docker-compose.
+
+===============================================================================
+1) Application / Script Environment Variables (read by Python code)
+===============================================================================
+
+WEAVIATE_GRAPHQL
+- Default: http://localhost:8080/v1/graphql
+- Used by:
+  - backend/orchestrator/tools.py:20
+  - backend/app/scripts/retrieve_rerank.py:39
+  - backend/app/scripts/backfill_weaviate_vectors_from_lmdb.py:27
+
+WEAVIATE_OBJECTS
+- Default: http://localhost:8080/v1/objects
+- Used by:
+  - backend/app/scripts/retrieve_rerank.py:40
+  - backend/app/scripts/backfill_weaviate_vectors_from_lmdb.py:26
+
+WEAVIATE_SHARD
+- Default: 128_f16
+- Used by:
+  - backend/orchestrator/tools.py:28
+  - backend/app/scripts/retrieve_rerank.py:1053
+  - backend/app/scripts/backfill_weaviate_vectors_from_lmdb.py:147
+
+WEAVIATE_NAMED_VECTOR
+- Default: colbert
+- Used by:
+  - backend/app/vector_config.py:28
+  - referenced via import in backend/orchestrator/tools.py and backend/app/scripts/retrieve_rerank.py
+
+WEAVIATE_RETRIEVAL_MODE
+- Default when used as fallback: vector
+- Notes: only used when RETRIEVAL_MODE is not set.
+- Used by:
+  - backend/orchestrator/tools.py:32
+  - backend/app/scripts/retrieve_rerank.py:77
+  - backend/app/api/eval.py:66
+
+WEAVIATE_HYBRID_ALPHA
+- Default when used as fallback: 0.5
+- Notes: only used when HYBRID_ALPHA is not set.
+- Used by:
+  - backend/orchestrator/tools.py:39
+  - backend/app/scripts/retrieve_rerank.py:80
+  - backend/app/api/eval.py:67
+
+WEAVIATE_BATCH_SIZE
+- Default: 128
+- Used by:
+  - backend/app/store.py:53
+
+WEAVIATE_HNSW_EF
+- Default: -1
+- Used by:
+  - backend/app/store.py:54
+
+WEAVIATE_HNSW_DYNAMIC_EF_MIN
+- Default: 100
+- Used by:
+  - backend/app/store.py:55
+
+WEAVIATE_HNSW_DYNAMIC_EF_MAX
+- Default: 1200
+- Used by:
+  - backend/app/store.py:56
+
+WEAVIATE_HNSW_DYNAMIC_EF_FACTOR
+- Default: 8
+- Used by:
+  - backend/app/store.py:57
+
+WEAVIATE_HNSW_FLAT_SEARCH_CUTOFF
+- Default: 40000
+- Used by:
+  - backend/app/store.py:58
+
+WEAVIATE_HNSW_VECTOR_CACHE_MAX_OBJECTS
+- Default: 0
+- Used by:
+  - backend/app/store.py:59
+
+WEAVIATE_PQ_ENABLED
+- Default: 1 (truthy; false if set to one of: 0/false/no)
+- Used by:
+  - backend/app/store.py:62
+
+WEAVIATE_PQ_CENTROIDS
+- Default: 256
+- Used by:
+  - backend/app/store.py:69
+
+WEAVIATE_PQ_SEGMENTS
+- Default: 0
+- Used by:
+  - backend/app/store.py:70
+
+WEAVIATE_PQ_TRAINING_LIMIT
+- Default: 50000
+- Used by:
+  - backend/app/store.py:71
+
+WEAVIATE_PQ_BIT_COMPRESSION
+- Default: 0 (false)
+- Used by:
+  - backend/app/store.py:72
+
+WEAVIATE_APPLY_HNSW_UPDATE
+- Default: 1 (truthy; false if set to one of: 0/false/no)
+- Used by:
+  - backend/app/store.py:79
+
+===============================================================================
+2) Non-prefixed env vars that control Weaviate retrieval behavior
+===============================================================================
+
+RETRIEVAL_MODE
+- Default: vector
+- Used by:
+  - backend/orchestrator/tools.py:32
+  - backend/app/scripts/retrieve_rerank.py:77
+  - backend/app/api/eval.py:66
+
+HYBRID_ALPHA
+- Default: 0.5
+- Used by:
+  - backend/orchestrator/tools.py:39
+  - backend/app/scripts/retrieve_rerank.py:80
+  - backend/app/api/eval.py:67
+
+===============================================================================
+3) Weaviate container environment (docker-compose service settings)
+===============================================================================
+
+Defined in backend/app/docker-compose.yml:9-17
+
+QUERY_DEFAULTS_LIMIT=20
+AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+PERSISTENCE_DATA_PATH=/var/lib/weaviate
+ENABLE_MODULES=text2vec-openai
+GRPC_PORT=50051
+LIMIT_RESOURCES=true
+HNSW_VECTOR_CACHE_MAX_OBJECTS=100000
+CLUSTER_HOSTNAME=acf0d04ae54d
+

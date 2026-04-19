@@ -67,7 +67,7 @@ async def qrels_eval(
     hybrid_alpha: float = Form(default=_env_float("HYBRID_ALPHA", 0.5, secondary="WEAVIATE_HYBRID_ALPHA")),
     limit: int = Form(default=200),
     rerank_k: int = Form(default=100),
-    filter_missing_qrels: bool = Form(default=True),
+    filter_missing_qrels: bool = Form(default=False),
 ):
     _require_api_key(api_key)
 

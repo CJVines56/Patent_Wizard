@@ -47,7 +47,7 @@ New function:
 
 Exact API call used:
 - Endpoint: `GET /v1/objects/Claim/{uuid}?include=vector`
-- Base URL: `WEAVIATE_OBJECTS` (default `http://localhost:8080/v1/objects`)
+- Base URL: `WEAVIATE_OBJECTS` (default `http://localhost:8081/v1/objects`)
 - Expected response field: `vectors["colbert"]` (or configured `WEAVIATE_NAMED_VECTOR`)
 
 Any missing vector / wrong named vector / empty vector / non-128 last dimension causes a hard error.
@@ -97,7 +97,42 @@ poetry run python backend/app/scripts/retrieve_rerank.py `
   --debug-compare-max-abs-tol 0.05 `
   --metrics-csv backend/validation/metrics_l400_r200.csv `
   --per-query-csv backend/validation/per_query_diagnostics_l400_r200.csv `
-  --per-query-top10-csv backend/validation/per_query_top10_l400_r200.csv
+  --per-query-topk 20 `
+  --per-query-topk-csv backend/validation/per_query_top20_l400_r200.csv `
+  --per-query-xlsx backend/validation/per_query_readable_l400_r200.xlsx
+```
+
+### Qrels eval from a single file containing both queries and qrels
+
+If your qrels file already contains `query` text (for example `backend/validation/final_qrels.jsonl`), you can omit `--queries`:
+
+```powershell
+poetry run python backend/app/scripts/retrieve_rerank.py `
+  --qrels backend/validation/final_qrels.jsonl `
+  --retrieve-shard 128_f16 `
+  --rerank-shard 128_f16 `
+  --retrieval-mode vector `
+  --limit 400 `
+  --rerank-k 200 `
+  --rerank-source weaviate `
+  --metrics-csv backend/validation/final_qrels_metrics.csv
+```
+
+### Qrels eval hybrid-alpha sweep (0.0 -> 1.0 by 0.2)
+
+```powershell
+poetry run python backend/app/scripts/retrieve_rerank.py `
+  --queries backend/validation/queries.jsonl `
+  --qrels backend/validation/qrels.jsonl `
+  --retrieve-shard 128_f16 `
+  --rerank-shard 128_f16 `
+  --rerank-k 200 `
+  --rerank-source weaviate `
+  --sweep-hybrid-alphas `
+  --alpha-start 0.0 `
+  --alpha-stop 1.0 `
+  --alpha-step 0.2 `
+  --sweep-csv backend/validation/sweep_hybrid_alpha_0_to_1_step_02.csv
 ```
 
 ## Smoke Test (Embed -> Insert -> Fetch vectors -> Rerank)
@@ -144,8 +179,14 @@ $env:PROJECTION_PATH="C:\path\to\trained_projection.pt"
 - `--qrels`
 - `--metrics-csv`
 - `--per-query-csv`
-- `--per-query-top10-csv`
+- `--per-query-topk-csv` (alias: `--per-query-top10-csv`)
+- `--per-query-topk`
+- `--per-query-xlsx`
 - `--sweep-rerank-shards`
+- `--sweep-hybrid-alphas`
+- `--alpha-start`
+- `--alpha-stop`
+- `--alpha-step`
 - `--sweep-csv`
 - `--filter-missing-qrels` / `--no-filter-missing-qrels`
 
@@ -188,4 +229,3 @@ $env:PROJECTION_PATH="C:\path\to\trained_projection.pt"
 - `rerank_shard` default `128_f16`
 - `rerank_source` (`lmdb` or `weaviate`)
 - existing retrieval params (`retrieval_mode`, `hybrid_alpha`, `limit`, `rerank_k`, `filter_missing_qrels`)
-

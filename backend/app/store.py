@@ -98,7 +98,7 @@ STRICT_COLBERT_VECTORS = os.environ.get("STRICT_COLBERT_VECTORS", "0").strip() i
 }
 WEAVIATE_CONNECT_MODE = os.environ.get("WEAVIATE_CONNECT_MODE", "local").strip().lower() or "local"
 WEAVIATE_LOCAL_HOST = os.environ.get("WEAVIATE_LOCAL_HOST", "localhost").strip() or "localhost"
-WEAVIATE_LOCAL_PORT = int(os.environ.get("WEAVIATE_LOCAL_PORT", "8080"))
+WEAVIATE_LOCAL_PORT = int(os.environ.get("WEAVIATE_LOCAL_PORT", "8081"))
 WEAVIATE_LOCAL_GRPC_PORT = int(os.environ.get("WEAVIATE_LOCAL_GRPC_PORT", "50051"))
 WEAVIATE_HTTP_HOST = os.environ.get("WEAVIATE_HTTP_HOST", WEAVIATE_LOCAL_HOST).strip() or WEAVIATE_LOCAL_HOST
 WEAVIATE_HTTP_PORT = int(os.environ.get("WEAVIATE_HTTP_PORT", str(WEAVIATE_LOCAL_PORT)))

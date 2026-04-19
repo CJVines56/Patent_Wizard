@@ -161,8 +161,8 @@ def main() -> None:
     parser.add_argument(
         "--filter-missing-qrels",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Drop queries whose relevant claims are not in index.",
+        default=False,
+        help="Drop queries whose relevant claims are not in index (default: off).",
     )
     args = parser.parse_args()
 

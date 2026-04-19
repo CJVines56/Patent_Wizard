@@ -37,9 +37,9 @@ validation/
 .idea/
 .DS_Store
 .env
+backend/orchestrator/env
+backend/orchestrator/.env
 
 # Output / temp files
 export/
 tmp/
-
-backend/orchestrator/env

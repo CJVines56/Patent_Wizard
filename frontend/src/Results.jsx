@@ -4,8 +4,9 @@
 // - Shows answer on the left and a scrollable results column on the right
 import { useEffect, useMemo, useRef, useState } from "react";
 import SearchBar from "./components/SearchBar.jsx";
+import SearchScopeSelector from "./components/SearchScopeSelector.jsx";
 import DevTuningPanel from "./components/DevTuningPanel.jsx";
-import { orchestratorSearch } from "./lib/api.js";
+import { normalizeSearchScope, orchestratorSearch } from "./lib/api.js";
 import {
   DEFAULT_TUNING,
   DEV_TUNING_VISIBLE,
@@ -19,11 +20,29 @@ function getQ() {
   return new URLSearchParams(window.location.search).get("q") || "";
 }
 
+function getSearchScope() {
+  return normalizeSearchScope(new URLSearchParams(window.location.search).get("scope") || "claim");
+}
+
+function formatHistorySearchScope(searchScope) {
+  return normalizeSearchScope(searchScope) === "patent" ? "Patent" : "Claim";
+}
+
 const RESULTS_PANEL_WIDTH_KEY = "patent_miner_results_panel_width_v1";
 const RESULTS_PANEL_DEFAULT_WIDTH = 384;
 const RESULTS_PANEL_MIN_WIDTH = 220;
 const RESULTS_PANEL_MAX_WIDTH = 900;
-
+const EMPTY_FILTERS = Object.freeze({
+  dateFrom: "",
+  dateTo: "",
+  claimType: "",
+  docId: "",
+});
+const CLAIM_TYPE_FILTER_OPTIONS = [
+  { value: "", label: "Any" },
+  { value: "independent", label: "Independent" },
+  { value: "dependent", label: "Dependent" },
+];
 function clampPanelWidth(width) {
   return Math.min(RESULTS_PANEL_MAX_WIDTH, Math.max(RESULTS_PANEL_MIN_WIDTH, width));
 }
@@ -66,34 +85,64 @@ function formatDateDisplay(value) {
   return /^\d{8}$/.test(s) ? `${s.slice(0, 4)}/${s.slice(4, 6)}/${s.slice(6, 8)}` : s;
 }
 
-function itemMatchesFilters(item, filters) {
-  const authorStr = formatAuthors(item.authors).toLowerCase();
-  const cpcStr = String(item.classification || "").toLowerCase();
-  const kindStr = String(item.kind || "").toLowerCase();
-  const claimTypeStr = String(item.claim_type || "").toLowerCase();
-  const docIdStr = String(item.doc_id || "").toLowerCase();
-
-  if (filters.author && !authorStr.includes(filters.author)) return false;
-  if (filters.cpc && !cpcStr.includes(filters.cpc)) return false;
-  if (filters.kind && kindStr !== filters.kind) return false;
-  if (filters.claimType && claimTypeStr !== filters.claimType) return false;
-  if (filters.docId && !docIdStr.includes(filters.docId)) return false;
-
-  const filing = normalizeDateToken(item.filing_date);
-  if (filters.dateFrom && (!filing || filing < filters.dateFrom)) return false;
-  if (filters.dateTo && (!filing || filing > filters.dateTo)) return false;
-
-  return true;
+function googlePatentDocId(docId) {
+  return String(docId || "").replace(/^0+(?=\d)/, "");
 }
 
-function buildMockResult(query, tuning) {
+function buildFilterRequestParams(filters) {
+  const dateFrom = normalizeDateToken(filters.dateFrom);
+  const dateTo = normalizeDateToken(filters.dateTo);
+  return {
+    filter_doc_id: String(filters.docId || "").trim(),
+    filter_claim_type: String(filters.claimType || "").trim(),
+    filter_date_from: dateFrom,
+    filter_date_to: dateTo,
+  };
+}
+
+function readSearchFilters() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    dateFrom: String(params.get("dateFrom") || ""),
+    dateTo: String(params.get("dateTo") || ""),
+    claimType: String(params.get("claimType") || ""),
+    docId: String(params.get("docId") || ""),
+  };
+}
+
+function cloneFilters(filters) {
+  return {
+    dateFrom: String(filters?.dateFrom || ""),
+    dateTo: String(filters?.dateTo || ""),
+    claimType: String(filters?.claimType || ""),
+    docId: String(filters?.docId || ""),
+  };
+}
+
+function buildSearchUrl(query, searchScope, filters = EMPTY_FILTERS) {
+  const params = new URLSearchParams({
+    q: query,
+    scope: normalizeSearchScope(searchScope),
+  });
+  const nextFilters = cloneFilters(filters);
+  if (nextFilters.docId.trim()) params.set("docId", nextFilters.docId.trim());
+  if (nextFilters.claimType.trim()) params.set("claimType", nextFilters.claimType.trim());
+  if (nextFilters.dateFrom) params.set("dateFrom", nextFilters.dateFrom);
+  if (nextFilters.dateTo) params.set("dateTo", nextFilters.dateTo);
+  return "/search?" + params.toString();
+}
+
+function buildMockResult(query, tuning, searchScope) {
+  const normalizedScope = normalizeSearchScope(searchScope);
   const cited = Array.from({ length: tuning.k }, (_, i) => ({
-    id: `mock-cited-${i + 1}`,
+    id: normalizedScope === "patent" ? `mock-patent-${i + 1}` : `mock-cited-${i + 1}`,
     title: `Mock Cited Patent ${i + 1}`,
     snippet: `Preview snippet ${i + 1} for "${query}".`,
     doc_id: `12345${i + 1}`,
     claim_id: `C-${i + 1}`,
     claim_type: "independent",
+    best_claim_id: `C-${i + 1}`,
+    best_claim_type: "independent",
     filing_date: "20240101",
     classification: "G06F",
     authors: "Preview Inventor",
@@ -123,8 +172,12 @@ function buildMockResult(query, tuning) {
     cited_items: cited,
     other_items: other,
     mode: "rag",
+    search_scope: normalizedScope,
     answer:
       `Preview mode: API unreachable, showing mock data.\n` +
+      `${normalizedScope === "patent"
+        ? "Patent search ranks patents by their best matching claim."
+        : "Claim mode returns individual matching claims."}\n` +
       `Applied tuning -> k=${tuning.k}, k_extra=${tuning.k_extra}, alpha=${tuning.alpha}, ` +
       `retrieval_candidates=${tuning.retrieval_candidates}, rerank_k=${tuning.rerank_k}.`,
   };
@@ -132,6 +185,8 @@ function buildMockResult(query, tuning) {
 
 export default function Results() {
   const [q, setQ] = useState(getQ());       // current query from the URL
+  const [searchScope, setSearchScope] = useState(getSearchScope());
+  const [submittedSearchScope, setSubmittedSearchScope] = useState(getSearchScope());
   const [loading, setLoading] = useState(false); // fetch-in-progress flag
   const [error, setError] = useState(null);      // error message to show above cards
   const [result, setResult] = useState(null);    // API response
@@ -150,6 +205,7 @@ export default function Results() {
   const [showScrollToInput, setShowScrollToInput] = useState(false);
   const conversationRef = useRef(null);
   const inputRef = useRef(null);
+  const skipNextFetchRef = useRef(false);
     function startLeftPanelResize(e) {
       e.preventDefault();
       const startX = e.clientX;
@@ -172,16 +228,9 @@ export default function Results() {
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     }
-  const [rightPanelTab, setRightPanelTab] = useState("results");
-  const [filters, setFilters] = useState({
-    author: "",
-    cpc: "",
-    dateFrom: "",
-    dateTo: "",
-    kind: "",
-    claimType: "",
-    docId: "",
-  });
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filters, setFilters] = useState(() => readSearchFilters());
+  const [submittedFilters, setSubmittedFilters] = useState(() => readSearchFilters());
   const isNarrowResultsPanel = resultsPanelWidth < 340;
   const isWideResultsPanel = resultsPanelWidth > 520;
   const activeHistoryEntry = useMemo(
@@ -189,10 +238,46 @@ export default function Results() {
     [historyEntries, activeHistoryId],
   );
   const displayQuery = activeHistoryEntry?.query || q;
+  const resultSearchScope = result?.search_scope || activeHistoryEntry?.searchScope || submittedSearchScope;
+  const isPatentResultScope = resultSearchScope === "patent";
+  const normalizedFilters = useMemo(() => ({
+    dateFrom: normalizeDateToken(filters.dateFrom),
+    dateTo: normalizeDateToken(filters.dateTo),
+    claimType: filters.claimType.trim().toLowerCase(),
+    docId: filters.docId.trim().toLowerCase(),
+  }), [filters]);
+  const submittedFilterParams = useMemo(
+    () => buildFilterRequestParams(submittedFilters),
+    [submittedFilters],
+  );
+  const draftFilterParams = useMemo(
+    () => buildFilterRequestParams(filters),
+    [filters],
+  );
+  const activeFilterCount = useMemo(
+    () => Object.values(normalizedFilters).filter(Boolean).length,
+    [normalizedFilters],
+  );
+  const submittedFilterCount = useMemo(
+    () => Object.values(submittedFilterParams).filter(Boolean).length,
+    [submittedFilterParams],
+  );
+  const filtersDirty = useMemo(
+    () => JSON.stringify(draftFilterParams) !== JSON.stringify(submittedFilterParams),
+    [draftFilterParams, submittedFilterParams],
+  );
 
   // Watch for browser navigation (Back/Forward) and update query state
   useEffect(() => {
-    const onPop = () => setQ(getQ());
+    const onPop = () => {
+      const scope = getSearchScope();
+      const urlFilters = readSearchFilters();
+      setQ(getQ());
+      setSearchScope(scope);
+      setSubmittedSearchScope(scope);
+      setFilters(urlFilters);
+      setSubmittedFilters(urlFilters);
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
@@ -221,6 +306,10 @@ export default function Results() {
   // - call the orchestrator search with top-K settings
   // - guard every state update with `cancelled` so unmounted components aren't updated
   useEffect(() => {
+    if (skipNextFetchRef.current) {
+      skipNextFetchRef.current = false;
+      return;
+    }
     let cancelled = false;
     async function run() {
       if (!q) return;
@@ -232,11 +321,17 @@ export default function Results() {
       setErrorBarVisible(true);
       setPreviewBarVisible(true);
       try {
-        const data = await orchestratorSearch(q, activeTuning);
+        const data = await orchestratorSearch(q, {
+          ...activeTuning,
+          search_scope: submittedSearchScope,
+          ...submittedFilterParams,
+        });
         if (!cancelled) {
           const entry = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             query: q,
+            searchScope: submittedSearchScope,
+            filters: cloneFilters(submittedFilters),
             result: data,
             error: null,
             previewMode: false,
@@ -250,11 +345,13 @@ export default function Results() {
         }
       } catch (e) {
         if (!cancelled) {
-          const fallback = buildMockResult(q, normalizeTuning(activeTuning));
+          const fallback = buildMockResult(q, normalizeTuning(activeTuning), submittedSearchScope);
           const errorMessage = e?.message || String(e);
           const entry = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             query: q,
+            searchScope: submittedSearchScope,
+            filters: cloneFilters(submittedFilters),
             result: fallback,
             error: errorMessage,
             previewMode: true,
@@ -280,7 +377,7 @@ export default function Results() {
     return () => {
       cancelled = true;
     };
-  }, [q, activeTuning]);
+  }, [q, activeTuning, submittedSearchScope, submittedFilterParams, submittedFilters]);
 
   // Close modal on Escape
   useEffect(() => {
@@ -299,41 +396,13 @@ export default function Results() {
     }
   }, [resultsPanelWidth]);
 
-  const allItems = useMemo(() => {
-    const cited = result?.cited_items || [];
-    const other = result?.other_items || [];
-    return [...cited, ...other];
+  const filteredCitedItems = useMemo(() => {
+    return result?.cited_items || [];
   }, [result]);
 
-  const filterChoices = useMemo(() => {
-    const kinds = Array.from(
-      new Set(allItems.map((it) => String(it.kind || "").trim()).filter(Boolean)),
-    ).sort((a, b) => a.localeCompare(b));
-    const claimTypes = Array.from(
-      new Set(allItems.map((it) => String(it.claim_type || "").trim()).filter(Boolean)),
-    ).sort((a, b) => a.localeCompare(b));
-    return { kinds, claimTypes };
-  }, [allItems]);
-
-  const normalizedFilters = useMemo(() => ({
-    author: filters.author.trim().toLowerCase(),
-    cpc: filters.cpc.trim().toLowerCase(),
-    dateFrom: normalizeDateToken(filters.dateFrom),
-    dateTo: normalizeDateToken(filters.dateTo),
-    kind: filters.kind.trim().toLowerCase(),
-    claimType: filters.claimType.trim().toLowerCase(),
-    docId: filters.docId.trim().toLowerCase(),
-  }), [filters]);
-
-  const filteredCitedItems = useMemo(() => {
-    const cited = result?.cited_items || [];
-    return cited.filter((it) => itemMatchesFilters(it, normalizedFilters));
-  }, [result, normalizedFilters]);
-
   const filteredOtherItems = useMemo(() => {
-    const other = result?.other_items || [];
-    return other.filter((it) => itemMatchesFilters(it, normalizedFilters));
-  }, [result, normalizedFilters]);
+    return result?.other_items || [];
+  }, [result]);
 
   const figureEntries = useMemo(() => {
     if (!filteredCitedItems.length) return [];
@@ -360,11 +429,24 @@ export default function Results() {
   }, [filteredCitedItems]);
 
   // Search from this page: push a new URL and refresh local `q`
-  function handleSearch(nextQ) {
-    const url = "/search?" + new URLSearchParams({ q: nextQ }).toString();
+  function submitSearch(nextQ, nextFilters = filters) {
+    const normalizedNextFilters = cloneFilters(nextFilters);
+    const url = buildSearchUrl(nextQ, searchScope, normalizedNextFilters);
     window.history.pushState({}, "", url);
+    setSubmittedSearchScope(searchScope);
+    setSubmittedFilters(normalizedNextFilters);
+    setFiltersOpen(false);
     setQ(nextQ);
-    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+
+  function handleSearch(nextQ) {
+    submitSearch(nextQ, filters);
+  }
+
+  function handleSearchScopeChange(nextScope) {
+    const normalizedScope = normalizeSearchScope(nextScope);
+    if (normalizedScope === searchScope) return;
+    setSearchScope(normalizedScope);
   }
 
   function handleTuningChange(field, value) {
@@ -388,25 +470,30 @@ export default function Results() {
     setFilters((prev) => ({ ...prev, [field]: value }));
   }
 
+  function applyFilters() {
+    setFiltersOpen(false);
+  }
+
   function resetFilters() {
-    setFilters({
-      author: "",
-      cpc: "",
-      dateFrom: "",
-      dateTo: "",
-      kind: "",
-      claimType: "",
-      docId: "",
-    });
+    setFilters(cloneFilters(EMPTY_FILTERS));
   }
 
   function selectHistoryEntry(entryId) {
     const entry = historyEntries.find((item) => item.id === entryId);
     if (!entry) return;
+    const entryScope = normalizeSearchScope(entry.searchScope || entry.result?.search_scope);
+    const entryFilters = cloneFilters(entry.filters || EMPTY_FILTERS);
+    skipNextFetchRef.current = true;
     setActiveHistoryId(entryId);
     setResult(entry.result);
     setError(entry.error);
     setPreviewMode(Boolean(entry.previewMode));
+    setQ(entry.query);
+    setSearchScope(entryScope);
+    setSubmittedSearchScope(entryScope);
+    setFilters(entryFilters);
+    setSubmittedFilters(entryFilters);
+    window.history.replaceState({}, "", buildSearchUrl(entry.query, entryScope, entryFilters));
   }
 
   function startResultsPanelResize(e) {
@@ -514,6 +601,9 @@ export default function Results() {
                 <div className="space-y-2">
                   {historyEntries.map((entry, idx) => {
                     const isActive = entry.id === activeHistoryId;
+                    const entryScopeLabel = formatHistorySearchScope(
+                      entry.searchScope || entry.result?.search_scope,
+                    );
                     return (
                       <button
                         key={entry.id}
@@ -523,8 +613,15 @@ export default function Results() {
                           isActive ? "bg-white" : "bg-black/40 hover:bg-black/50 text-white"
                         }`}
                       >
-                        <p className={`text-[11px] ${isActive ? "text-black/60" : "text-white/60"}`}>Query {idx + 1}</p>
-                        <p className={`mt-1 text-xs font-semibold break-words ${isActive ? "text-black" : "text-white"}`}>{entry.query}</p>
+                        <p className={`text-[11px] ${isActive ? "text-black/60" : "text-white/60"}`}>
+                          Query {idx + 1} · {entryScopeLabel}
+                        </p>
+                        <p
+                          title={entry.query}
+                          className={`mt-1 text-xs font-semibold break-words line-clamp-2 ${isActive ? "text-black" : "text-white"}`}
+                        >
+                          {entry.query}
+                        </p>
                       </button>
                     );
                   })}
@@ -558,7 +655,123 @@ export default function Results() {
                     ))}
                   </div>
                   <div className="mt-4 flex flex-col items-center gap-3" ref={inputRef}>
-                    <SearchBar onSearch={handleSearch} placeholder="Refine your query..." />
+                    <SearchScopeSelector value={searchScope} onChange={handleSearchScopeChange} />
+                    <p className="text-xs text-white/70 text-center max-w-2xl">
+                      {searchScope === "patent"
+                        ? "Next search will use patent search and return one hit per patent using the best matching claim as the snippet."
+                        : "Next search will use claim mode and return the best individual matching claims."}
+                    </p>
+                    <SearchBar
+                      onSearch={handleSearch}
+                      placeholder="Refine your query..."
+                      extraControls={(
+                        <button
+                          type="button"
+                          onClick={() => setFiltersOpen((open) => !open)}
+                          className={`px-3 py-3 rounded-lg border text-sm font-medium whitespace-nowrap transition ${
+                            filtersOpen || activeFilterCount
+                              ? "bg-white text-black border-white"
+                              : "bg-black/30 border-white/20 text-white hover:bg-black/40"
+                          }`}
+                          aria-expanded={filtersOpen}
+                          aria-label="Toggle filters"
+                        >
+                          Filters{activeFilterCount ? ` (${activeFilterCount})` : ""}
+                        </button>
+                      )}
+                    />
+                    {filtersOpen ? (
+                      <div className="w-full max-w-2xl rounded-xl border border-white/20 bg-black/40 p-4 shadow-lg shadow-black/20">
+                        <div className="space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm text-white/80">Filter search results</p>
+                              <p className="text-xs text-white/55">
+                                Available filters: doc_id, claim type, and filing date.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setFiltersOpen(false)}
+                              className="rounded border border-white/20 px-2 py-1 text-xs text-white/70 hover:bg-white/10"
+                            >
+                              Close
+                            </button>
+                          </div>
+                          <label className="block text-xs text-white/70">
+                            doc_id contains
+                            <input
+                              type="text"
+                              value={filters.docId}
+                              onChange={(e) => handleFilterChange("docId", e.target.value)}
+                              className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
+                              placeholder="e.g. 12345"
+                            />
+                          </label>
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <label className="block text-xs text-white/70">
+                              Filing from
+                              <input
+                                type="date"
+                                value={filters.dateFrom}
+                                onChange={(e) => handleFilterChange("dateFrom", e.target.value)}
+                                className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
+                              />
+                            </label>
+                            <label className="block text-xs text-white/70">
+                              Filing to
+                              <input
+                                type="date"
+                                value={filters.dateTo}
+                                onChange={(e) => handleFilterChange("dateTo", e.target.value)}
+                                className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
+                              />
+                            </label>
+                          </div>
+                          <label className="block text-xs text-white/70">
+                            Claim type
+                            <select
+                              value={filters.claimType}
+                              onChange={(e) => handleFilterChange("claimType", e.target.value)}
+                              className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
+                            >
+                              {CLAIM_TYPE_FILTER_OPTIONS.map((option) => (
+                                <option key={option.value || "any"} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={applyFilters}
+                              className="px-3 py-1.5 rounded bg-white text-black border border-white text-xs hover:bg-white/90"
+                            >
+                              Use on Next Search
+                            </button>
+                            <button
+                              type="button"
+                              onClick={resetFilters}
+                              className="px-3 py-1.5 rounded bg-white/15 border border-white/30 text-white text-xs hover:bg-white/20"
+                            >
+                              Clear Filters
+                            </button>
+                            <p className="text-xs text-white/60">
+                              Current returned results: cited {filteredCitedItems.length}, other {filteredOtherItems.length}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ) : filtersDirty ? (
+                      <p className="text-xs text-white/60 text-center max-w-2xl">
+                        Edited filters will be used the next time you submit a search.
+                      </p>
+                    ) : submittedFilterCount ? (
+                      <p className="text-xs text-white/60 text-center max-w-2xl">
+                        {submittedFilterCount} filter{submittedFilterCount === 1 ? "" : "s"} applied to the current search.
+                      </p>
+                    ) : null}
                     <button
                       type="button"
                       className="mt-2 px-4 py-2 rounded bg-black/60 text-white font-semibold border border-white/20 hover:bg-black/80 transition"
@@ -573,7 +786,7 @@ export default function Results() {
                   {showScrollToInput && (
                     <button
                       type="button"
-                      className="fixed bottom-8 right-8 z-50 bg-blue-600 text-white rounded-full shadow-lg px-4 py-2 text-sm font-semibold hover:bg-blue-700 transition"
+                      className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 rounded-full border border-orange-200/40 bg-[#500000]/90 px-5 py-2 text-sm font-semibold text-orange-50 shadow-lg shadow-black/30 backdrop-blur-sm transition hover:bg-orange-600/95"
                       onClick={() => {
                         inputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
                       }}
@@ -629,131 +842,13 @@ export default function Results() {
                 <div className="h-full w-px bg-white/25" />
               </div>
               <div className="p-4 pt-24 text-base">
-                <div className="mb-3 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setRightPanelTab("results")}
-                    className={`px-3 py-1.5 rounded text-xs border ${
-                      rightPanelTab === "results"
-                        ? "bg-white text-black border-white"
-                        : "bg-white/10 text-white border-white/30 hover:bg-white/20"
-                    }`}
-                  >
-                    Results
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRightPanelTab("filters")}
-                    className={`px-3 py-1.5 rounded text-xs border ${
-                      rightPanelTab === "filters"
-                        ? "bg-white text-black border-white"
-                        : "bg-white/10 text-white border-white/30 hover:bg-white/20"
-                    }`}
-                  >
-                    Filters
-                  </button>
-                </div>
-
-                {rightPanelTab === "filters" ? (
-                  <div className="space-y-3">
-                    <p className="text-sm text-white/70">Filter current results (frontend only)</p>
-                    <label className="block text-xs text-white/70">
-                      Author
-                      <input
-                        type="text"
-                        value={filters.author}
-                        onChange={(e) => handleFilterChange("author", e.target.value)}
-                        className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
-                        placeholder="e.g. smith"
-                      />
-                    </label>
-                    <label className="block text-xs text-white/70">
-                      CPC / Classification
-                      <input
-                        type="text"
-                        value={filters.cpc}
-                        onChange={(e) => handleFilterChange("cpc", e.target.value)}
-                        className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
-                        placeholder="e.g. G06F"
-                      />
-                    </label>
-                    <label className="block text-xs text-white/70">
-                      doc_id contains
-                      <input
-                        type="text"
-                        value={filters.docId}
-                        onChange={(e) => handleFilterChange("docId", e.target.value)}
-                        className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
-                        placeholder="e.g. 12345"
-                      />
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="block text-xs text-white/70">
-                        Filing from
-                        <input
-                          type="date"
-                          value={filters.dateFrom}
-                          onChange={(e) => handleFilterChange("dateFrom", e.target.value)}
-                          className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
-                        />
-                      </label>
-                      <label className="block text-xs text-white/70">
-                        Filing to
-                        <input
-                          type="date"
-                          value={filters.dateTo}
-                          onChange={(e) => handleFilterChange("dateTo", e.target.value)}
-                          className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
-                        />
-                      </label>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="block text-xs text-white/70">
-                        Kind
-                        <select
-                          value={filters.kind}
-                          onChange={(e) => handleFilterChange("kind", e.target.value)}
-                          className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
-                        >
-                          <option value="">Any</option>
-                          {filterChoices.kinds.map((kind) => (
-                            <option key={kind} value={kind}>{kind}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block text-xs text-white/70">
-                        Claim type
-                        <select
-                          value={filters.claimType}
-                          onChange={(e) => handleFilterChange("claimType", e.target.value)}
-                          className="mt-1 w-full rounded bg-white/95 text-black px-2 py-1.5"
-                        >
-                          <option value="">Any</option>
-                          {filterChoices.claimTypes.map((claimType) => (
-                            <option key={claimType} value={claimType}>{claimType}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={resetFilters}
-                      className="px-3 py-1.5 rounded bg-white/15 border border-white/30 text-white text-xs hover:bg-white/20"
-                    >
-                      Clear Filters
-                    </button>
-                    <p className="text-xs text-white/60">
-                      Matches: cited {filteredCitedItems.length}/{result?.cited_items?.length || 0}, other {filteredOtherItems.length}/{result?.other_items?.length || 0}
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    <p className="text-base text-white/70 mb-2">Results</p>
-                    <p className="text-sm text-white/60">Cited Patents ({filteredCitedItems.length})</p>
-                    {filteredCitedItems.map((it, idx) => {
+                <p className="text-base text-white/70 mb-2">Results</p>
+                <p className="text-sm text-white/60">Cited Patents ({filteredCitedItems.length})</p>
+                {filteredCitedItems.map((it, idx) => {
                       const kind = (it.kind || "").trim();
-                      const gpUrl = it.doc_id
-                        ? `https://patents.google.com/patent/US${it.doc_id}${kind ? kind : ""}/en?oq=${it.doc_id}`
+                      const patentDocId = googlePatentDocId(it.doc_id);
+                      const gpUrl = patentDocId
+                        ? `https://patents.google.com/patent/US${patentDocId}${kind ? kind : ""}/en?oq=${patentDocId}`
                         : null;
                       return (
                         <div key={`cited-${it.id}`} id={`ref-${idx + 1}`} className="bg-black/30 p-3 rounded mt-2">
@@ -768,7 +863,12 @@ export default function Results() {
                                 </p>
                               )}
                               <div className="mt-2 text-sm text-white/80 space-y-1">
-                                <p><span className="text-white/60">Title:</span> {it.title}</p>
+                                {isPatentResultScope && it.best_claim_id ? (
+                                  <p><span className="text-white/60">Best Claim Match:</span> {it.best_claim_id}</p>
+                                ) : null}
+                                {isPatentResultScope && it.best_claim_type ? (
+                                  <p><span className="text-white/60">Best Claim Type:</span> {it.best_claim_type}</p>
+                                ) : null}
                                 {it.authors ? (
                                   <p><span className="text-white/60">Authors:</span> {formatAuthors(it.authors)}</p>
                                 ) : null}
@@ -777,9 +877,6 @@ export default function Results() {
                                 ) : null}
                                 {it.filing_date ? (
                                   <p><span className="text-white/60">Filing Date:</span> {formatDateDisplay(it.filing_date)}</p>
-                                ) : null}
-                                {it.kind ? (
-                                  <p><span className="text-white/60">Kind:</span> {it.kind}</p>
                                 ) : null}
                                 {it.doc_id ? (
                                   <p><span className="text-white/60">doc_id:</span> {it.doc_id}</p>
@@ -801,18 +898,19 @@ export default function Results() {
                           </div>
                         </div>
                       );
-                    })}
-                    {filteredCitedItems.length === 0 ? (
-                      <p className="text-xs text-white/60 mt-2">No cited results match the current filters.</p>
-                    ) : null}
+                })}
+                {filteredCitedItems.length === 0 ? (
+                  <p className="text-xs text-white/60 mt-2">No cited results match the current filters.</p>
+                ) : null}
 
-                    {filteredOtherItems.length ? (
-                      <>
-                        <p className="text-xs text-white/60 mt-4">More Results ({filteredOtherItems.length})</p>
-                        {filteredOtherItems.map((it, idx) => {
+                {filteredOtherItems.length ? (
+                  <>
+                    <p className="text-xs text-white/60 mt-4">More Results ({filteredOtherItems.length})</p>
+                    {filteredOtherItems.map((it, idx) => {
                           const kind = (it.kind || "").trim();
-                          const gpUrl = it.doc_id
-                            ? `https://patents.google.com/patent/US${it.doc_id}${kind ? kind : ""}/en?oq=${it.doc_id}`
+                          const patentDocId = googlePatentDocId(it.doc_id);
+                          const gpUrl = patentDocId
+                            ? `https://patents.google.com/patent/US${patentDocId}${kind ? kind : ""}/en?oq=${patentDocId}`
                             : null;
                           return (
                             <div key={`other-${it.id}`} className="bg-black/30 p-3 rounded mt-2">
@@ -827,7 +925,12 @@ export default function Results() {
                                     </p>
                                   )}
                                   <div className="mt-2 text-xs text-white/80 space-y-1">
-                                    <p><span className="text-white/60">Title:</span> {it.title}</p>
+                                    {isPatentResultScope && it.best_claim_id ? (
+                                      <p><span className="text-white/60">Best Claim Match:</span> {it.best_claim_id}</p>
+                                    ) : null}
+                                    {isPatentResultScope && it.best_claim_type ? (
+                                      <p><span className="text-white/60">Best Claim Type:</span> {it.best_claim_type}</p>
+                                    ) : null}
                                     {it.authors ? (
                                       <p><span className="text-white/60">Authors:</span> {formatAuthors(it.authors)}</p>
                                     ) : null}
@@ -836,9 +939,6 @@ export default function Results() {
                                     ) : null}
                                     {it.filing_date ? (
                                       <p><span className="text-white/60">Filing Date:</span> {formatDateDisplay(it.filing_date)}</p>
-                                    ) : null}
-                                    {it.kind ? (
-                                      <p><span className="text-white/60">Kind:</span> {it.kind}</p>
                                     ) : null}
                                     {it.doc_id ? (
                                       <p><span className="text-white/60">doc_id:</span> {it.doc_id}</p>
@@ -860,11 +960,9 @@ export default function Results() {
                               </div>
                             </div>
                           );
-                        })}
-                      </>
-                    ) : null}
+                    })}
                   </>
-                )}
+                ) : null}
               </div>
             </aside>
           </div>

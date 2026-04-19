@@ -835,44 +835,7 @@ def _flush_collector(chunks):
         flush()
 
 
-def _normalize_archive_stem_override(value: str | None) -> str | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    name = Path(raw).name
-    lower = name.lower()
-    for ext in (".tar.gz", ".tgz", ".tar", ".zip"):
-        if lower.endswith(ext):
-            return name[: -len(ext)]
-    return name
-
-
-def _normalize_target_doc_id(value: str | None) -> str | None:
-    raw = "".join(ch for ch in str(value or "").strip().upper() if ch.isalnum())
-    if raw.startswith("US") and len(raw) > 2:
-        raw = raw[2:]
-    if raw.isdigit():
-        raw = str(int(raw))
-    return raw or None
-
-
-def _normalize_target_doc_ids(values) -> set[str] | None:
-    if values is None:
-        return None
-    normalized = {
-        value
-        for value in (_normalize_target_doc_id(item) for item in values)
-        if value
-    }
-    return normalized
-
-
-def _dataset_file_base(
-    input_date: str | datetime,
-    path: Path,
-    dataset_product: str,
-    archive_stem_override: str | None = None,
-) -> tuple[Path, str, datetime, str]:
+def _dataset_file_base(input_date: str | datetime, path: Path, dataset_product: str) -> tuple[Path, str, datetime, str]:
     """Return (base path without extension, ext hint, last_tuesday, product_upper)."""
     path = Path(path)
     start_date = datetime.strptime(input_date, "%Y-%m-%d") if isinstance(input_date, str) else input_date
@@ -880,11 +843,7 @@ def _dataset_file_base(
     last_tuesday = start_date - timedelta(days=days_since_tuesday)
     dataset_product = str(dataset_product)
     product_upper = dataset_product.upper()
-    override = _normalize_archive_stem_override(archive_stem_override)
-    if override:
-        file_stem = override
-        ext_hint = ".tar" if product_upper == "PTGRDT" else ".zip"
-    elif product_upper == "PTGRDT":
+    if product_upper == "PTGRDT":
         file_stem = f"I{last_tuesday:%Y%m%d}"
         ext_hint = ".tar"
     else:
@@ -1418,8 +1377,8 @@ def clamp_patent_doc(blob: bytes) -> bytes:
 def iter_uspto_subdocs(stream, chunk_size=1_048_576):
     buf = bytearray()
     START = b'<?xml'
-    END_TAGS = (b'</us-patent-grant>', b'</PATDOC>')
-    keep  = max(len(START), *(len(tag) for tag in END_TAGS))  # tail we keep between chunks
+    END   = b'</us-patent-grant>'
+    keep  = max(len(START), len(END))  # tail we keep between chunks
 
     while True:
         chunk = stream.read(chunk_size)
@@ -1443,18 +1402,15 @@ def iter_uspto_subdocs(stream, chunk_size=1_048_576):
                     del buf[:-keep]
                     buf[:keep] = tail
                 break
-            end_candidates = [(buf.find(tag, s), tag) for tag in END_TAGS]
-            end_candidates = [(idx, tag) for idx, tag in end_candidates if idx != -1]
-            if not end_candidates:
-                # need more bytes for a full doc; retain the whole partial
-                # document starting at the XML declaration instead of only the
-                # tail, otherwise large patents spanning chunk boundaries are
-                # dropped.
-                if s > 0:
-                    del buf[:s]
+            e = buf.find(END, s)
+            if e == -1:
+                # need more bytes for a full doc
+                if len(buf) > keep:
+                    tail = buf[-keep:]
+                    del buf[:-keep]
+                    buf[:keep] = tail
                 break
-            e, end_tag = min(end_candidates, key=lambda pair: pair[0])
-            e += len(end_tag)
+            e += len(END)
             # slice the complete doc
             xml_bytes = bytes(buf[s:e])
             yield xml_bytes
@@ -1462,56 +1418,10 @@ def iter_uspto_subdocs(stream, chunk_size=1_048_576):
 
     # At EOF, try to emit a last complete doc if present
     s = buf.find(START)
-    if s != -1:
-        end_candidates = [(buf.find(tag, s), tag) for tag in END_TAGS]
-        end_candidates = [(idx, tag) for idx, tag in end_candidates if idx != -1]
-        if end_candidates:
-            e, end_tag = min(end_candidates, key=lambda pair: pair[0])
-            e += len(end_tag)
-            yield bytes(buf[s:e])
-
-
-def _root_local_name(root: etree._Element) -> str:
-    if not isinstance(root.tag, str):
-        return str(root.tag)
-    return etree.QName(root).localname if root.tag.startswith("{") else root.tag
-
-
-def _is_legacy_patdoc(root: etree._Element) -> bool:
-    return _root_local_name(root).upper() == "PATDOC"
-
-
-def _extract_patdoc_metadata(root: etree._Element) -> dict[str, str | None]:
-    authors_list: list[str] = []
-    for inventor in root.xpath(".//B720//B721"):
-        name_bits = [
-            " ".join(str(text).split())
-            for text in inventor.xpath(".//PARTY-US//NAM//text()")
-            if " ".join(str(text).split())
-        ]
-        if name_bits:
-            authors_list.append(" ".join(name_bits))
-    abstract_parts = [
-        " ".join(str(text).split())
-        for text in root.xpath(".//SDOAB//PDAT/text() | .//SDOAB//text()")
-        if " ".join(str(text).split())
-    ]
-    return {
-        "doc_id": xp_text_any(root, [".//B100//B110//DNUM//PDAT/text()"]),
-        "application_number": xp_text_any(root, [".//B200//B210//DNUM//PDAT/text()"]),
-        "kind": xp_text_any(root, [".//B100//B130//PDAT/text()"]),
-        "filing_date": xp_text_any(root, [".//B200//B220//DATE//PDAT/text()"]),
-        "classification": xp_text_any(
-            root,
-            [
-                ".//B500//B510//B511//PDAT/text()",
-                ".//B500//B520//B521//PDAT/text()",
-            ],
-        ),
-        "title": xp_text_any(root, [".//B500//B540//PDAT/text()", ".//B500//B540//text()"]),
-        "abstract_text": " ".join(abstract_parts).strip(),
-        "authors": "; ".join(authors_list),
-    }
+    e = buf.find(END, s) if s != -1 else -1
+    if s != -1 and e != -1:
+        e += len(END)
+        yield bytes(buf[s:e])
 
 
 
@@ -2648,8 +2558,6 @@ def bulk_dataset_download(
     metadata_mismatch_csv: Path | None = None,
     max_patents: int | None = 1000,
     master_manifest_csv: Path | None = None,
-    archive_stem_override: str | None = None,
-    include_doc_ids = None,
 ) -> list[dict] | None:
     '''This function takes in a start date and creates an end date 7 days later.
     It then queries the USPTO bulk data API for available datasets in that date range.
@@ -2681,24 +2589,18 @@ def bulk_dataset_download(
     collect_chunks = return_chunks or sample_enabled
     max_patents = max_patents if (max_patents is None or max_patents > 0) else None
     seen_doc_ids: set[str] = set()
-    target_doc_ids = _normalize_target_doc_ids(include_doc_ids)
     stop_processing = False
 
     def _register_doc_id(doc_id: str | None) -> bool:
         nonlocal stop_processing
-        normalized_doc_id = _normalize_target_doc_id(doc_id)
-        if not normalized_doc_id:
+        if not doc_id:
             return False
-        if target_doc_ids is not None and normalized_doc_id not in target_doc_ids:
-            return False
-        if normalized_doc_id in seen_doc_ids:
+        if doc_id in seen_doc_ids:
             return True
         if max_patents is not None and len(seen_doc_ids) >= max_patents:
             stop_processing = True
             return False
-        seen_doc_ids.add(normalized_doc_id)
-        if target_doc_ids and seen_doc_ids.issuperset(target_doc_ids):
-            stop_processing = True
+        seen_doc_ids.add(doc_id)
         return True
     sampler: StreamingSampler | None = None
     sample_target_dir = sample_out_dir or path
@@ -2711,12 +2613,7 @@ def bulk_dataset_download(
                 manifest_ids = None
         sampler = StreamingSampler(k=sample_k, out_dir=sample_target_dir, seed=sample_seed, manifest_doc_ids=manifest_ids)
 
-    base, ext_hint, last_tuesday, product_upper = _dataset_file_base(
-        input_date,
-        path,
-        dataset_product,
-        archive_stem_override=archive_stem_override,
-    )
+    base, ext_hint, last_tuesday, product_upper = _dataset_file_base(input_date, path, dataset_product)
     file_stem = base.name
     path.mkdir(parents=True, exist_ok=True)
     existing_path = _find_existing_archive(base)
@@ -3346,16 +3243,10 @@ def bulk_dataset_download(
                     # Handle ST.26 sequence listings separately
                     if is_sequence_listing(root):
                         continue
-                    legacy_patdoc = _is_legacy_patdoc(root)
                     counter = 0
                     authors = ""
-                    if legacy_patdoc:
-                        legacy_meta = _extract_patdoc_metadata(root)
-                        doc_id = legacy_meta["doc_id"]
-                    else:
-                        legacy_meta = {}
-                        doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
-                        doc_id = doc_id[0] if doc_id else None
+                    doc_id = root.xpath("//publication-reference//document-id//doc-number//text()")
+                    doc_id = doc_id[0] if doc_id else None
                     dataset_shard = _extract_util_shard_from_path(inner_xml_name) or _util_shard_from_doc_id(doc_id)
                     if doc_id and doc_id[:2] == "RE":
                         print(f'Skipping reissue patent {doc_id}')
@@ -3364,38 +3255,29 @@ def bulk_dataset_download(
                         if stop_processing:
                             break
                         continue
-                    if legacy_patdoc:
-                        app_number = legacy_meta["application_number"]
-                        kind = legacy_meta["kind"]
-                        filing_date = legacy_meta["filing_date"]
-                        classification = legacy_meta["classification"]
-                        classification_cpc = []
-                        title = legacy_meta["title"]
-                        abstract_text = legacy_meta["abstract_text"] or ""
-                        authors = legacy_meta["authors"] or ""
-                        claim_nodes = root.xpath(".//CLM")
-                    else:
-                        app_number = extract_application_number(root, doc_id=doc_id)
-                        kind_list = root.xpath("//publication-reference//document-id//kind//text()")
-                        kind = kind_list[0].strip() if kind_list else None
-                        try:
-                            filing_date = root.xpath("//application-reference//document-id//date//text()")[0]
-                        except IndexError:
-                            outline(root, max_depth=4, max_children=20)
-                            print(root.xpath("//publication-reference//document-id//date//text()"))
-                            print(f'Doc ID that failed is {doc_id}')
-                            input("Fake breakpoint")
-                            continue
-                        classification = extract_primary_classification(root)
-                        classification_cpc = extract_all_cpc_symbols(root)
-                        title = extract_title(root)
-                        abstract_text = _extract_abstract_text(root)
-                        first_names = root.xpath("//inventors//inventor//addressbook//first-name//text()")
-                        last_names = root.xpath("//inventors//inventor//addressbook//last-name//text()")
-                        for name in zip(first_names, last_names):
-                            authors += " ".join(name) + "; "
-                        authors = authors[:-2]
-                        claim_nodes = root.xpath("//claims//claim")
+                    app_number = extract_application_number(root, doc_id=doc_id)
+                    kind_list = root.xpath("//publication-reference//document-id//kind//text()")
+                    kind = kind_list[0].strip() if kind_list else None
+                    try:
+                        filing_date = root.xpath("//application-reference//document-id//date//text()")[0]
+                    except IndexError:
+                        #outline(root, max_depth=4, max_children=20)
+                        outline(root, max_depth=4, max_children=20)
+                        print(root.xpath("//publication-reference//document-id//date//text()"))
+                        print(f'Doc ID that failed is {doc_id}')
+                        input("Fake breakpoint")
+                        continue
+                    
+                    classification = extract_primary_classification(root)
+                    classification_cpc = extract_all_cpc_symbols(root)
+                    # Patent title (robust to namespaces)
+                    title = extract_title(root)
+                    abstract_text = _extract_abstract_text(root)
+                    first_names = root.xpath("//inventors//inventor//addressbook//first-name//text()")
+                    last_names = root.xpath("//inventors//inventor//addressbook//last-name//text()")
+                    for name in zip(first_names, last_names):
+                        authors += " ".join(name) + "; "
+                    authors = authors[:-2]
                     # Remember metadata for sequence listings that follow
                     last_doc_meta = {
                         "authors": authors,
@@ -3412,7 +3294,7 @@ def bulk_dataset_download(
                     claims_count = 0
                     def _record_chunk(payload: dict):
                         doc_buffer.append(payload)
-                    for ordinal, claim in enumerate(claim_nodes, start=1):
+                    for ordinal, claim in enumerate(root.xpath("//claims//claim"), start=1):
                         claim_text = elem_to_rich_text(claim).strip()
                         if not claim_text:
                             continue

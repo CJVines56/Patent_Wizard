@@ -28,7 +28,7 @@ def build_graph():
     workflow.add_conditional_edges(
         "query_route",
         tools_condition,
-        {"tools": "retrieve", END: END},
+        {"tools": "retrieve", END: "generate_answer"},
     )
 
     workflow.add_edge("retrieve", "store_contexts")          # changed

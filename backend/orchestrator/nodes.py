@@ -75,7 +75,6 @@ def query_route(state: MessagesState):   ## When finalized -> route this part to
 TOOL_NAME = "retrieve_context"  # matches tools.py
 
 def store_contexts(state: MessagesState)-> metadatastate:
-
     for m in reversed(state["messages"]):
         if getattr(m, "type", None) == "tool" and getattr(m, "name", None) == TOOL_NAME:
             tool_msg = m
@@ -115,8 +114,36 @@ generate_prompt = (
 
 def generate_answer(state: metadatastate)-> metadatastate:
     """Generate an answer."""
-    question = state["cleaned_query"]
-    context = state["joined_context"]
+    def _message_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts = [_message_text(v) for v in value]
+            return "\n".join(p for p in parts if p.strip())
+        if isinstance(value, dict):
+            for key in ("text", "content", "answer", "output_text"):
+                text = value.get(key)
+                if isinstance(text, str) and text.strip():
+                    return text
+            return str(value)
+        return str(value)
+
+    question = str(state.get("cleaned_query") or "").strip()
+    context = str(state.get("joined_context") or "").strip()
+
+    # If query_route already produced a direct assistant answer (no retrieval/tool),
+    # prefer returning that message instead of re-invoking the model.
+    if not context:
+        messages = state.get("messages") or []
+        for msg in reversed(messages):
+            role = str(getattr(msg, "type", "") or getattr(msg, "role", "") or "").lower()
+            if role in {"ai", "assistant"}:
+                direct = _message_text(getattr(msg, "content", None)).strip()
+                if direct:
+                    return {"answer": [direct]}
+
     prompt = generate_prompt.format(question=question, context=context)
     response = nodes_model.invoke([{"role": "user", "content": prompt}])
     return {"answer": [response.content]}

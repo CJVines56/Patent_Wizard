@@ -7,6 +7,7 @@ export default function SearchBar({
   placeholder = "Search patents...",
   topK = null,
   onTopKAdjust = null,
+  extraControls = null,
 }) {
   // Local input state (the query text)
   const [q, setQ] = useState("");
@@ -59,6 +60,7 @@ export default function SearchBar({
             K: {topK ?? "-"}
           </button>
         )}
+        {extraControls}
         <button
           type="submit"
           disabled={loading || !q.trim()}
