@@ -14,6 +14,12 @@ from tools import routing_function
 
 
 def build_graph():
+
+    """
+    Build and return the uncompiled graph (builder).
+    Call draw_mermaid() on this builder if you want to visualize without warnings.
+    """
+    
     workflow = StateGraph(Patent_Miner_State)
 
     workflow.add_node("query_clean", query_clean)

@@ -22,7 +22,7 @@ clean_prompt = (
     "You are a patent search and retrieval assistant.\n"
     "Given a user question, detect and correct grammatical errors and misspellings.\n"
     "If the question contains ambiguous or vague words/phrases, rewrite it concisely while preserving meaning.\n"
-    "If the question contains no errors or ambiguity, do not rewrite it.\n"
+    "If the question contains no errors or ambiguity or is a grammatically correct sentence/paragraph, do not rewrite it.\n"
     "Return ONLY the cleaned question text.\n"
     "Here is the user question: {question}"
 )
