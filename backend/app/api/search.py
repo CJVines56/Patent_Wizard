@@ -1,12 +1,15 @@
 import json
+import time
 import os
 import uuid
+from langsmith.run_helpers import trace
 from fastapi import APIRouter, Query, Request  # Router groups related endpoints; Query validates URL params
 from typing import Dict, Any, List #Typing hints
 from ..models.search import SearchResponse
 from ..services.retrieval import naive_filter, first_k
 from ..services.orchestrator_fake import make_fake_answer
-from backend.orchestrator.tools import retrieve_context
+from backend.orchestrator.tools import direct_retrieval
+
 
 router = APIRouter(prefix="/api", tags=["search"])  # All routes here start with /api
 '''curl "http://localhost:8000/healthz"
@@ -35,6 +38,8 @@ def _debug_log(enabled: bool, trace_id: str, event: str, **fields: Any) -> None:
         print("[search-debug] " + json.dumps(payload, default=str))
     except Exception:
         print(f"[search-debug] trace_id={trace_id} event={event} fields={fields}")
+
+
 
 
 @router.get("/search", response_model=SearchResponse)  # GET /api/search
@@ -126,6 +131,11 @@ async def search(
     answer = None
     mapped_items: List[Dict[str, Any]] = []
     graph = getattr(request.app.state, "graph", None)
+
+    ## Kosi edits ##
+    thread_id = "dev-session-1"
+    ## Kosi edits ##
+
     explicit_where_filter = _build_explicit_where_filter()
     has_explicit_filters = bool(explicit_where_filter)
     display_limit = max(1, k + max(0, k_extra))
@@ -156,30 +166,33 @@ async def search(
     )
 
     def _retrieve_payload(query_text: str, *, reason: str) -> Dict[str, Any]:
-        payload_args: Dict[str, Any] = {
-            "query": query_text,
-            "search_scope": effective_search_scope,
-            "result_limit": display_limit,
-        }
-        if retrieval_mode:
-            payload_args["retrieval_mode"] = retrieval_mode
-        if effective_hybrid_alpha is not None:
-            payload_args["hybrid_alpha"] = effective_hybrid_alpha
-        if retrieval_candidates is not None:
-            payload_args["candidate_limit"] = retrieval_candidates
-        if rerank_k is not None:
-            payload_args["rerank_k"] = rerank_k
-        if explicit_where_filter:
-            payload_args["where_filter"] = explicit_where_filter
         _debug_log(
             debug_enabled,
             trace_id,
             "retrieve_context_invoke",
             reason=reason,
-            payload=payload_args,
+            payload={
+                "query": query_text,
+                "search_scope": effective_search_scope,
+                "result_limit": display_limit,
+                "retrieval_mode": retrieval_mode,
+                "hybrid_alpha": effective_hybrid_alpha,
+                "candidate_limit": retrieval_candidates,
+                "rerank_k": rerank_k,
+                "where_filter": explicit_where_filter or None,
+            },
         )
-        payload = retrieve_context.invoke(payload_args)
-        chunks = payload.get("chunks") if isinstance(payload, dict) else None
+        payload = direct_retrieval(
+            query=query_text,
+            search_scope=effective_search_scope,
+            result_limit=display_limit,
+            retrieval_mode=retrieval_mode,
+            hybrid_alpha=effective_hybrid_alpha,
+            candidate_limit=retrieval_candidates,
+            rerank_k=rerank_k,
+            where_filter=explicit_where_filter or None,
+        )
+        chunks = payload.get("retrieved_context") if isinstance(payload, dict) else None
         _debug_log(
             debug_enabled,
             trace_id,
@@ -194,39 +207,41 @@ async def search(
         # decides not to call tools or returns empty contexts.
         _debug_log(debug_enabled, trace_id, "graph_invoke_start")
         try:
-            final_state = graph.invoke({"messages": [{"role": "user", "content": q}]})
+            
+            config = {"configurable": {"thread_id": thread_id}}
+            final_state = graph.invoke(
+                {"messages": [{"role": "user", "content": q}]},
+                config=config
+                )
+            
+            answer = final_state["answer"]
+            if isinstance(answer, list):
+                answer = "\n".join(str(x) for x in answer)
+            elif not isinstance(answer, str):
+                answer = str(answer)
+            mapped_items = _map_contexts_to_items(final_state.get("retrieved_context") or [])
+    
             _debug_log(
                 debug_enabled,
                 trace_id,
                 "graph_invoke_success",
                 state_keys=sorted(list(final_state.keys())) if isinstance(final_state, dict) else None,
             )
+
         except Exception as exc:
+
+            print(f"Error running graph for question '{q}': {exc}")
+
             _debug_log(
                 debug_enabled,
                 trace_id,
                 "graph_invoke_error",
                 error=repr(exc),
             )
-            final_state = {}
+            payload = _retrieve_payload(q, reason="graph_invoke_error")
+            mapped_items = _map_contexts_to_items(payload.get("retrieved_context") or [])
 
-        mapped_items = _map_contexts_to_items(final_state.get("contexts") or [])
-        answer = final_state.get("answer", "")
-        if isinstance(answer, list):
-            answer = "\n".join(str(x) for x in answer)
-        elif not isinstance(answer, str):
-            answer = str(answer)
 
-        if len(mapped_items) < display_limit:
-            _debug_log(
-                debug_enabled,
-                trace_id,
-                "graph_fallback_to_direct_retrieval",
-                graph_context_count=len(mapped_items),
-                display_limit=display_limit,
-            )
-            payload = _retrieve_payload(q, reason="graph_context_shortfall")
-            mapped_items = _map_contexts_to_items(payload.get("chunks") or [])
     elif not rag or has_explicit_filters:
         _debug_log(
             debug_enabled,
@@ -238,7 +253,7 @@ async def search(
             q,
             reason=("rag_false" if not rag else "explicit_filters_present"),
         )
-        mapped_items = _map_contexts_to_items(payload.get("chunks") or [])
+        mapped_items = _map_contexts_to_items(payload.get("retrieved_context") or [])
     else:
         # Fallback path if graph is unavailable.
         _debug_log(

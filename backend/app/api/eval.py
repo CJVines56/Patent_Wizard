@@ -8,9 +8,6 @@ from typing import Optional
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 
-from backend.app.scripts.retrieve_rerank import evaluate
-
-
 router = APIRouter(prefix="/api", tags=["eval"])
 
 
@@ -70,6 +67,10 @@ async def qrels_eval(
     filter_missing_qrels: bool = Form(default=False),
 ):
     _require_api_key(api_key)
+
+    # Lazy import keeps API startup light and avoids loading the full eval
+    # dependency chain unless this endpoint is actually used.
+    from backend.app.scripts.retrieve_rerank import evaluate
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)

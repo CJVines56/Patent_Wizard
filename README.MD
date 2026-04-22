@@ -106,6 +106,8 @@ poetry run python backend/app/scripts/retrieve_rerank.py `
 
 If your qrels file already contains `query` text (for example `backend/validation/final_qrels.jsonl`), you can omit `--queries`:
 
+Qrels rows can use either `relevant_doc_ids` directly or `relevant_claim_ids`; the eval path now normalizes claim ids to patent-level `doc_id` relevance before scoring.
+
 ```powershell
 poetry run python backend/app/scripts/retrieve_rerank.py `
   --qrels backend/validation/final_qrels.jsonl `
@@ -228,4 +230,5 @@ $env:PROJECTION_PATH="C:\path\to\trained_projection.pt"
 - `retrieve_shard` default `128_f16`
 - `rerank_shard` default `128_f16`
 - `rerank_source` (`lmdb` or `weaviate`)
+- patent-level qrels evaluation from either `relevant_doc_ids` or `relevant_claim_ids`
 - existing retrieval params (`retrieval_mode`, `hybrid_alpha`, `limit`, `rerank_k`, `filter_missing_qrels`)

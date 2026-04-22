@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import requests
 from langchain.tools import tool
+from backend.orchestrator.patent_miner_classes import retrievalstate, Patent_Miner_State
 
 from backend.app.env_bootstrap import load_project_env
 from backend.app.services.download import rich_to_plain
@@ -19,6 +20,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_int(value: str | None, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 _DEFAULT_HTTP_HOST = os.environ.get(
@@ -74,6 +82,7 @@ FORCE_CLIENT_HYBRID = os.environ.get("FORCE_CLIENT_HYBRID", "1").strip() not in 
     "no",
     "NO",
 }
+VALID_CLIENT_HYBRID_FUSION_METHODS = {"relative_score", "rrf"}
 SEARCH_SCOPE_CLAIM = "claim"
 SEARCH_SCOPE_PATENT = "patent"
 PATENT_SCOPE_CANDIDATE_LIMIT_CAP = int(os.environ.get("PATENT_SCOPE_CANDIDATE_LIMIT_CAP", "5000"))
@@ -89,6 +98,29 @@ PATENT_PREFILTER_FIELDS = {
     "kind",
     "title",
 }
+_HYBRID_FUSION_DEBUG_PRINTED = False
+
+
+def _normalize_client_hybrid_fusion_method(value: str | None) -> str:
+    method = str(value or "relative_score").strip().lower()
+    aliases = {
+        "relative_score_fusion": "relative_score",
+        "weaviate": "relative_score",
+    }
+    method = aliases.get(method, method)
+    if method not in VALID_CLIENT_HYBRID_FUSION_METHODS:
+        raise ValueError(
+            "Invalid CLIENT_HYBRID_FUSION_METHOD='%s'. Allowed: %s."
+            % (value, sorted(VALID_CLIENT_HYBRID_FUSION_METHODS))
+        )
+    return method
+
+
+CLIENT_HYBRID_FUSION_METHOD = _normalize_client_hybrid_fusion_method(
+    os.environ.get("CLIENT_HYBRID_FUSION_METHOD", "relative_score")
+)
+HYBRID_FUSION_DEBUG = _env_bool("HYBRID_FUSION_DEBUG", False)
+HYBRID_FUSION_DEBUG_TOPN = max(1, _safe_int(os.environ.get("HYBRID_FUSION_DEBUG_TOPN"), 10))
 
 
 def _embed_query_colbert(query: str) -> List[List[float]]:
@@ -625,12 +657,23 @@ def _build_retrieval_clause(query: str, mode: str, hybrid_alpha: float, query_ve
     return f'nearVector:{{vector:{json.dumps(query_vector)},targetVectors:["{WEAVIATE_NAMED_VECTOR}"]}},'
 
 
-def _query_claim_rows(retrieval_clause: str, claim_where: str, limit: int) -> List[Dict[str, Any]]:
+def _query_claim_rows(
+    retrieval_clause: str,
+    claim_where: str,
+    limit: int,
+    *,
+    include_score: bool = False,
+) -> List[Dict[str, Any]]:
+    additional_fields = "id distance"
+    if include_score:
+        additional_fields += " score"
     gql = (
         "{ Get { Claim("
         f"{retrieval_clause}"
         f"{claim_where} limit: {int(limit)}"
-        ") { claim_id doc_id claim_type text _additional { id distance } } } }"
+        ") { claim_id doc_id claim_type text _additional { "
+        f"{additional_fields}"
+        " } } } }"
     )
     data = _post_graphql(gql)
     return data.get("Get", {}).get("Claim", []) or []
@@ -674,7 +717,96 @@ def _claim_row_key(hit: Dict[str, Any]) -> str:
     return str(hit.get("claim_id") or addl.get("id") or hit.get("doc_id") or "")
 
 
-def _fuse_hybrid_rows(
+def _merge_hybrid_row(existing: Dict[str, Any], candidate: Dict[str, Any]) -> None:
+    existing_addl = existing.get("_additional") or {}
+    candidate_addl = candidate.get("_additional") or {}
+    if existing_addl.get("distance") is None and candidate_addl.get("distance") is not None:
+        existing_addl["distance"] = candidate_addl.get("distance")
+    if existing_addl.get("score") is None and candidate_addl.get("score") is not None:
+        existing_addl["score"] = candidate_addl.get("score")
+    existing["_additional"] = existing_addl
+    for field in ("doc_id", "claim_type", "text", "claim_id"):
+        if not existing.get(field) and candidate.get(field):
+            existing[field] = candidate.get(field)
+
+
+def _normalize_relative_scores(raw_scores: Dict[str, float]) -> Dict[str, float]:
+    if not raw_scores:
+        return {}
+    min_score = min(raw_scores.values())
+    max_score = max(raw_scores.values())
+    # A constant-score leg does not differentiate candidates, so normalize it to
+    # zeros instead of ones and let the other leg carry the ordering signal.
+    if abs(max_score - min_score) <= 1e-12:
+        return {key: 0.0 for key in raw_scores}
+    scale = max_score - min_score
+    return {key: (value - min_score) / scale for key, value in raw_scores.items()}
+
+
+def _row_vector_relevance_score(row: Dict[str, Any]) -> Optional[float]:
+    addl = row.get("_additional") or {}
+    distance = addl.get("distance")
+    if distance is not None:
+        # Weaviate nearVector distance is lower-is-better, so negate it before
+        # relative-score normalization to make the vector leg higher-is-better.
+        return -float(distance)
+    score = addl.get("score")
+    return None if score is None else float(score)
+
+
+def _row_bm25_relevance_score(row: Dict[str, Any]) -> Optional[float]:
+    score = (row.get("_additional") or {}).get("score")
+    return None if score is None else float(score)
+
+
+def _hybrid_source_label(*, has_vector: bool, has_bm25: bool) -> str:
+    if has_vector and has_bm25:
+        return "both"
+    if has_vector:
+        return "vector_only"
+    if has_bm25:
+        return "bm25_only"
+    return "none"
+
+
+def _fmt_debug_float(value: Optional[float]) -> str:
+    return "" if value is None else f"{value:.6f}"
+
+
+def _log_hybrid_fusion_debug_once(
+    query_text: str,
+    rows: List[Dict[str, Any]],
+    *,
+    alpha: float,
+    fusion_method: str,
+) -> None:
+    global _HYBRID_FUSION_DEBUG_PRINTED
+    if not HYBRID_FUSION_DEBUG or _HYBRID_FUSION_DEBUG_PRINTED:
+        return
+    _HYBRID_FUSION_DEBUG_PRINTED = True
+    print(
+        "[debug] client hybrid fusion query=%s alpha=%.6f method=%s"
+        % (json.dumps(query_text), alpha, fusion_method)
+    )
+    for rank, row in enumerate(rows[:HYBRID_FUSION_DEBUG_TOPN], start=1):
+        addl = row.get("_additional") or {}
+        print(
+            "[debug] fusion rank=%s key=%s source=%s bm25_raw=%s bm25_norm=%s "
+            "vector_raw=%s vector_norm=%s fused=%s"
+            % (
+                rank,
+                _claim_row_key(row),
+                addl.get("hybrid_source", ""),
+                _fmt_debug_float(addl.get("bm25_score_raw")),
+                _fmt_debug_float(addl.get("bm25_score_norm")),
+                _fmt_debug_float(addl.get("vector_score_raw")),
+                _fmt_debug_float(addl.get("vector_score_norm")),
+                _fmt_debug_float(addl.get("hybrid_fused_score")),
+            )
+        )
+
+
+def _fuse_hybrid_rows_rrf(
     vector_rows: List[Dict[str, Any]],
     bm25_rows: List[Dict[str, Any]],
     alpha: float,
@@ -689,6 +821,8 @@ def _fuse_hybrid_rows(
     }
     score_by_key: Dict[str, float] = {}
     row_by_key: Dict[str, Dict[str, Any]] = {}
+    vector_keys = {_claim_row_key(row) for row in vector_rows if _claim_row_key(row)}
+    bm25_keys = {_claim_row_key(row) for row in bm25_rows if _claim_row_key(row)}
 
     for source, rows in (("vector", vector_rows), ("bm25", bm25_rows)):
         w = weights[source]
@@ -701,19 +835,102 @@ def _fuse_hybrid_rows(
             if key not in row_by_key:
                 row_by_key[key] = row
             else:
-                existing_addl = row_by_key[key].get("_additional") or {}
-                candidate_addl = row.get("_additional") or {}
-                if existing_addl.get("distance") is None and candidate_addl.get("distance") is not None:
-                    merged = dict(row_by_key[key])
-                    merged["_additional"] = {
-                        **existing_addl,
-                        "distance": candidate_addl.get("distance"),
-                    }
-                    row_by_key[key] = merged
+                _merge_hybrid_row(row_by_key[key], row)
             score_by_key[key] = score_by_key.get(key, 0.0) + (w / float(rrf_k + rank))
 
     ranked_keys = sorted(score_by_key, key=lambda k: score_by_key[k], reverse=True)[: int(limit)]
-    return [row_by_key[k] for k in ranked_keys]
+    ranked_rows = [row_by_key[k] for k in ranked_keys]
+    for key, row in zip(ranked_keys, ranked_rows):
+        addl = row.setdefault("_additional", {})
+        addl["hybrid_fused_score"] = score_by_key[key]
+        addl["hybrid_source"] = _hybrid_source_label(
+            has_vector=key in vector_keys,
+            has_bm25=key in bm25_keys,
+        )
+    return ranked_rows
+
+
+def _fuse_hybrid_rows_relative_score(
+    vector_rows: List[Dict[str, Any]],
+    bm25_rows: List[Dict[str, Any]],
+    alpha: float,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    alpha = max(0.0, min(1.0, float(alpha)))
+    row_by_key: Dict[str, Dict[str, Any]] = {}
+    vector_keys: set[str] = set()
+    bm25_keys: set[str] = set()
+    vector_raw_by_key: Dict[str, float] = {}
+    bm25_raw_by_key: Dict[str, float] = {}
+
+    for row in vector_rows:
+        key = _claim_row_key(row)
+        if not key:
+            continue
+        vector_keys.add(key)
+        if key not in row_by_key:
+            row_by_key[key] = row
+        else:
+            _merge_hybrid_row(row_by_key[key], row)
+        raw_score = _row_vector_relevance_score(row)
+        if raw_score is not None:
+            vector_raw_by_key[key] = raw_score
+
+    for row in bm25_rows:
+        key = _claim_row_key(row)
+        if not key:
+            continue
+        bm25_keys.add(key)
+        if key not in row_by_key:
+            row_by_key[key] = row
+        else:
+            _merge_hybrid_row(row_by_key[key], row)
+        raw_score = _row_bm25_relevance_score(row)
+        if raw_score is not None:
+            bm25_raw_by_key[key] = raw_score
+
+    vector_norm_by_key = _normalize_relative_scores(vector_raw_by_key)
+    bm25_norm_by_key = _normalize_relative_scores(bm25_raw_by_key)
+
+    # Approximate Weaviate-style relative score fusion client-side by normalizing
+    # both legs to [0,1] and blending score magnitudes instead of rank positions.
+    fused_score_by_key: Dict[str, float] = {}
+    for key, row in row_by_key.items():
+        bm25_norm = bm25_norm_by_key.get(key, 0.0)
+        vector_norm = vector_norm_by_key.get(key, 0.0)
+        addl = row.setdefault("_additional", {})
+        addl["bm25_score_raw"] = bm25_raw_by_key.get(key)
+        addl["bm25_score_norm"] = bm25_norm
+        addl["vector_score_raw"] = vector_raw_by_key.get(key)
+        addl["vector_score_norm"] = vector_norm
+        addl["hybrid_source"] = _hybrid_source_label(
+            has_vector=key in vector_keys,
+            has_bm25=key in bm25_keys,
+        )
+        addl["hybrid_fused_score"] = ((1.0 - alpha) * bm25_norm) + (alpha * vector_norm)
+        fused_score_by_key[key] = addl["hybrid_fused_score"]
+
+    ranked_keys = sorted(
+        fused_score_by_key,
+        key=lambda key: (fused_score_by_key[key], bm25_norm_by_key.get(key, 0.0), vector_norm_by_key.get(key, 0.0)),
+        reverse=True,
+    )[: int(limit)]
+    return [row_by_key[key] for key in ranked_keys]
+
+
+def _fuse_hybrid_rows(
+    vector_rows: List[Dict[str, Any]],
+    bm25_rows: List[Dict[str, Any]],
+    alpha: float,
+    limit: int,
+    *,
+    fusion_method: str = CLIENT_HYBRID_FUSION_METHOD,
+    rrf_k: int = 60,
+) -> List[Dict[str, Any]]:
+    method = _normalize_client_hybrid_fusion_method(fusion_method)
+    if method == "rrf":
+        return _fuse_hybrid_rows_rrf(vector_rows, bm25_rows, alpha, limit, rrf_k=rrf_k)
+    return _fuse_hybrid_rows_relative_score(vector_rows, bm25_rows, alpha, limit)
 
 
 def _retrieve_hybrid_client_fusion(
@@ -734,12 +951,19 @@ def _retrieve_hybrid_client_fusion(
     except Exception as ve:
         print(f"[warn] hybrid nearVector leg failed: {ve}")
     try:
-        bm25_rows = _query_claim_rows(bm25_clause, claim_where, int(limit))
+        bm25_rows = _query_claim_rows(bm25_clause, claim_where, int(limit), include_score=True)
     except Exception as be:
         print(f"[warn] hybrid bm25 leg failed: {be}")
     if not vec_rows and not bm25_rows:
         raise RuntimeError("both hybrid legs failed (nearVector and bm25)")
-    return _fuse_hybrid_rows(vec_rows, bm25_rows, alpha, int(limit))
+    fused_rows = _fuse_hybrid_rows(vec_rows, bm25_rows, alpha, int(limit))
+    _log_hybrid_fusion_debug_once(
+        query_text,
+        fused_rows,
+        alpha=alpha,
+        fusion_method=CLIENT_HYBRID_FUSION_METHOD,
+    )
+    return fused_rows
 
 
 def _normalize_retrieval_mode(value: str | None) -> str:
@@ -1050,23 +1274,195 @@ def _retrieve_unranked_prefilter_hits(
     return hits
 
 
-@tool(response_format="content")
-def retrieve_context(
-    query: str,
-    where_filter: Optional[Dict[str, Any]] = None,
-    retrieval_mode: Optional[str] = None,
-    hybrid_alpha: Optional[float] = None,
-    search_scope: Optional[str] = None,
-    result_limit: Optional[int] = None,
-    candidate_limit: Optional[int] = None,
-    rerank_k: Optional[int] = None,
-):
+def retrieve_context(state: Patent_Miner_State,
+                     where_filter: Optional[Dict[str, Any]] = None,
+                     retrieval_mode: Optional[str] = None,
+                     hybrid_alpha: Optional[float] = None,
+                     search_scope: Optional[str] = None,
+                     result_limit: Optional[int] = None,
+                     candidate_limit: Optional[int] = None,
+                     rerank_k: Optional[int] = None,
+                     ):
     """Retrieve information to help answer a query, optionally using metadata filters.
 
     Args:
         query: Search terms to look for
         where_filter: Filter for database search
     """
+    messages = state.get("messages") or []
+    query_text = messages[-1].content if messages else ""
+    
+    if not query_text:
+        return {"query": query_text, "joined_text": "", "chunks": []}
+
+
+    effective_mode = _normalize_retrieval_mode(retrieval_mode)
+    effective_search_scope = _normalize_search_scope(search_scope)
+    effective_alpha = HYBRID_ALPHA if hybrid_alpha is None else max(0.0, min(1.0, float(hybrid_alpha)))
+    effective_limit = _resolve_positive_int(result_limit, DEFAULT_LIMIT, minimum=1)
+    candidate_default = (
+        _patent_candidate_limit_default(effective_limit)
+        if effective_search_scope == SEARCH_SCOPE_PATENT
+        else max(DEFAULT_CANDIDATE_LIMIT, effective_limit)
+    )
+    effective_candidate_limit = _resolve_positive_int(
+        candidate_limit,
+        candidate_default,
+        minimum=effective_limit,
+    )
+    rerank_default = (
+        _patent_rerank_k_default(effective_limit)
+        if effective_search_scope == SEARCH_SCOPE_PATENT
+        else max(RERANK_K, effective_limit)
+    )
+    effective_rerank_k = _resolve_positive_int(
+        rerank_k,
+        rerank_default,
+        minimum=effective_limit,
+    )
+    query_vector = _embed_query_colbert(query_text) if effective_mode in {"vector", "hybrid"} else []
+    retrieval_clause = _build_retrieval_clause(query_text, effective_mode, effective_alpha, query_vector)
+    patent_prefilter, claim_prefilter, _residual_filter = _split_prefilter_scopes(where_filter)
+    prefiltered_doc_ids = _prefilter_doc_ids_from_patent_metadata(patent_prefilter)
+    used_prefilter_batches = False
+
+    if patent_prefilter and prefiltered_doc_ids == []:
+        hits: List[Dict[str, Any]] = []
+    elif prefiltered_doc_ids and len(prefiltered_doc_ids) > CLAIM_PREFILTER_DOC_ID_BATCH_SIZE:
+        used_prefilter_batches = True
+        hits = []
+        seen_hit_keys = set()
+        for doc_id_batch in _batched(prefiltered_doc_ids, CLAIM_PREFILTER_DOC_ID_BATCH_SIZE):
+            claim_where = _build_claim_where(doc_id_batch, claim_prefilter)
+            batch_hits = _retrieve_claim_rows(
+                query_text,
+                retrieval_clause,
+                claim_where,
+                query_vector,
+                effective_mode,
+                effective_alpha,
+                int(effective_candidate_limit),
+            )
+            for hit in batch_hits:
+                hit_key = _claim_row_key(hit)
+                if not hit_key or hit_key in seen_hit_keys:
+                    continue
+                seen_hit_keys.add(hit_key)
+                hits.append(hit)
+    else:
+        claim_where = _build_claim_where(prefiltered_doc_ids, claim_prefilter)
+        hits = _retrieve_claim_rows(
+            query_text,
+            retrieval_clause,
+            claim_where,
+            query_vector,
+            effective_mode,
+            effective_alpha,
+            int(effective_candidate_limit),
+        )
+
+    if not hits and prefiltered_doc_ids:
+        used_prefilter_batches = True
+        hits = _retrieve_unranked_prefilter_hits(
+            prefiltered_doc_ids,
+            claim_prefilter,
+            int(effective_candidate_limit),
+        )
+
+    if where_filter and hits:
+        candidate_doc_ids: List[str] = []
+        seen_candidate_doc_ids = set()
+        for hit in hits:
+            doc_id = str(hit.get("doc_id", "")).strip()
+            if doc_id and doc_id not in seen_candidate_doc_ids:
+                seen_candidate_doc_ids.add(doc_id)
+                candidate_doc_ids.append(doc_id)
+        candidate_patent_meta = _fetch_patent_metadata(candidate_doc_ids)
+        hits = [
+            hit
+            for hit in hits
+            if _matches_where_filter(
+                where_filter,
+                hit,
+                {},
+                candidate_patent_meta.get(str(hit.get("doc_id", "")).strip(), {}),
+            )
+        ]
+
+    rerank_window = len(hits) if used_prefilter_batches else effective_rerank_k
+    hits = _rerank_hits(hits, query_text, RERANK_SHARD, rerank_window)
+    if effective_search_scope == SEARCH_SCOPE_PATENT:
+        hits = _collapse_hits_to_patents(hits)
+    hits = hits[:effective_limit]
+
+    unique_doc_ids = []
+    seen_doc_ids = set()
+    for hit in hits:
+        did = str(hit.get("doc_id", "")).strip()
+        if did and did not in seen_doc_ids:
+            seen_doc_ids.add(did)
+            unique_doc_ids.append(did)
+
+    patent_meta = _fetch_patent_metadata(unique_doc_ids)
+
+    chunks: List[Dict[str, Any]] = []
+    for hit in hits:
+        addl = hit.get("_additional") or {}
+        claim_id = str(hit.get("claim_id", "")).strip()
+        doc_id = str(hit.get("doc_id", "")).strip()
+        patent_row = patent_meta.get(doc_id, {})
+        claim_text = rich_to_plain(str(hit.get("text") or ""))
+        text = _preferred_result_text(effective_search_scope, patent_row, claim_text)
+        snippet = text[:500]
+        best_claim_type = str(hit.get("claim_type") or "")
+
+        # Include SearchItem-compatible fields in metadata for API shaping.
+        metadata = {
+            "id": doc_id if effective_search_scope == SEARCH_SCOPE_PATENT else hit.get("claim_id") or addl.get("id", ""),
+            "title": patent_row.get("title", ""),
+            "snippet": snippet,
+            "search_text": text,
+            "doc_id": doc_id,
+            "claim_id": claim_id,
+            "claim_type": best_claim_type,
+            "best_claim_id": claim_id,
+            "best_claim_type": best_claim_type,
+            "distance": addl.get("distance"),
+            "filing_date": patent_row.get("filing_date", ""),
+            "classification": patent_row.get("classification", ""),
+            "authors": patent_row.get("authors", []),
+            "kind": patent_row.get("kind", ""),
+            "abstract_text": rich_to_plain(str(patent_row.get("abstract_text") or patent_row.get("abstract") or "")),
+        }
+        chunks.append({"text": text, "metadata": metadata})
+
+    joined_context = "\n\n".join(c["text"] for c in chunks if c.get("text"))
+
+    return {"joined_context": joined_context, "retrieved_context": chunks}
+    
+  
+
+
+def routing_function(state: retrievalstate):
+    return "retrieve" if state["retrieval_required"] else "answer"
+
+
+def direct_retrieval(query: str,
+                     where_filter: Optional[Dict[str, Any]] = None,
+                     retrieval_mode: Optional[str] = None,
+                     hybrid_alpha: Optional[float] = None,
+                     search_scope: Optional[str] = None,
+                     result_limit: Optional[int] = None,
+                     candidate_limit: Optional[int] = None,
+                     rerank_k: Optional[int] = None,
+                     ):
+    """Retrieve information to help answer a query, optionally using metadata filters.
+
+    Args:
+        query: Search terms to look for
+        where_filter: Filter for database search
+    """
+
     if not query or not query.strip():
         return {"query": query, "joined_text": "", "chunks": []}
 
@@ -1212,6 +1608,7 @@ def retrieve_context(
         chunks.append({"text": text, "metadata": metadata})
 
     joined_text = "\n\n".join(c["text"] for c in chunks if c.get("text"))
+
     return {
         "query": query,
         "search_scope": effective_search_scope,
@@ -1226,4 +1623,3 @@ def retrieve_context(
     }
 
 
-retriever_tool = retrieve_context

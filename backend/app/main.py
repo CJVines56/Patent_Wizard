@@ -1,7 +1,5 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from .api.search import router as search_router
-from .api.eval import router as eval_router
 from pathlib import Path
 from dotenv import load_dotenv
 import logging
@@ -37,6 +35,8 @@ _ORCH_DIR = Path(__file__).resolve().parents[1] / "orchestrator"
 load_dotenv(_ORCH_DIR / ".env")
 load_dotenv(_ORCH_DIR / "env")
 
+from .api.search import router as search_router
+from .api.eval import router as eval_router
 from backend.orchestrator.graph import compile_graph
 
 app = FastAPI(title="Patent Miner API (POC)", version="0.1.0")

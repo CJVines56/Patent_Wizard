@@ -1,45 +1,60 @@
-from langgraph.graph import MessagesState, StateGraph, START, END
-from langgraph.prebuilt import ToolNode, tools_condition
-from backend.orchestrator.tools import retriever_tool
-from backend.orchestrator.nodes import query_clean, query_route, generate_answer, store_contexts
-from backend.orchestrator.nodes2 import metadata_filter_node
-from backend.orchestrator.patent_miner_classes import metadatastate
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import InMemorySaver
+from backend.orchestrator.patent_miner_classes import Patent_Miner_State
+
+from backend.orchestrator.nodes import (
+    query_clean,
+    query_route,
+    general_answer,
+    rusty_answer,
+    summarization_node
+)
+from backend.orchestrator.tools import retrieve_context, routing_function
 
 
 def build_graph():
+
     """
     Build and return the uncompiled graph (builder).
     Call draw_mermaid() on this builder if you want to visualize without warnings.
     """
-
-    workflow = StateGraph(MessagesState, output_schema=metadatastate)
+    
+    workflow = StateGraph(Patent_Miner_State)
 
     workflow.add_node("query_clean", query_clean)
-    workflow.add_node("metadata_filter", metadata_filter_node)
     workflow.add_node("query_route", query_route)
-    workflow.add_node("retrieve", ToolNode([retriever_tool]))
-    workflow.add_node("store_contexts", store_contexts)      # NEW
-    workflow.add_node("generate_answer", generate_answer)
+    workflow.add_node("retrieve", retrieve_context)
+    workflow.add_node("general_answer", general_answer)
+    workflow.add_node("rusty_answer", rusty_answer)
+    workflow.add_node("summarize", summarization_node)
 
     workflow.add_edge(START, "query_clean")
-    workflow.add_edge("query_clean", "metadata_filter")         # NEW
-    workflow.add_edge("metadata_filter", "query_route")  #NEW
+    workflow.add_edge("query_clean", "query_route")
 
     workflow.add_conditional_edges(
         "query_route",
-        tools_condition,
-        {"tools": "retrieve", END: "generate_answer"},
+        routing_function,
+        {
+            "retrieve": "retrieve",
+            "answer": "general_answer",
+        },
     )
 
-    workflow.add_edge("retrieve", "store_contexts")          # changed
-    workflow.add_edge("store_contexts", "generate_answer")   # changed
-    workflow.add_edge("generate_answer", END)
+    workflow.add_edge("retrieve", "rusty_answer")
+
+    # Both answer paths append to memory then END
+    workflow.add_edge("rusty_answer", "summarize")
+    workflow.add_edge("general_answer", "summarize")
+    workflow.add_edge("summarize", END)
 
     return workflow
 
+
 def compile_graph(print_mermaid: bool = False):
     builder = build_graph()
-    compiled_graph = builder.compile()
+
+    checkpointer = InMemorySaver()
+    compiled_graph = builder.compile(checkpointer=checkpointer)
 
     if print_mermaid:
         print(compiled_graph.get_graph().draw_mermaid())

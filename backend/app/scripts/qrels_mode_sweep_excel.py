@@ -162,7 +162,7 @@ def main() -> None:
         "--filter-missing-qrels",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Drop queries whose relevant claims are not in index (default: off).",
+        help="Drop queries whose relevant patents are not in index (default: off).",
     )
     args = parser.parse_args()
 

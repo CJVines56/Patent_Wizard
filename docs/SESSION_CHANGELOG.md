@@ -1,5 +1,125 @@
 # Session Changelog
 
+## 2026-04-21 16:26:44 CDT
+- File: [backend/app/api/search.py](C:/Users/Optim/Patent_Wizard/backend/app/api/search.py)
+- Lines changed: `_retrieve_payload` helper inside the `/api/search` handler.
+- Problem: the retrieval helper built a partially populated dict and then indexed optional keys, which could raise `KeyError`.
+- Change: passed retrieval arguments directly into `retrieve_context()` and logged the same values explicitly.
+- Why: removes the missing-key failure mode and keeps the call aligned with the helper signature.
+
+## 2026-04-21 13:58:30 CDT
+- File: [backend/orchestrator/tools.py](C:/Users/Optim/Patent_Wizard/backend/orchestrator/tools.py)
+- Lines changed: top-level import block.
+- Problem: `patent_miner_classes` was imported as a top-level module, which failed when the API imported `backend.orchestrator.tools`.
+- Change: Switched the import to `backend.orchestrator.patent_miner_classes`.
+- Why: Makes the orchestrator module resolvable through the package import path used by the API.
+
+- File: [backend/orchestrator/nodes.py](C:/Users/Optim/Patent_Wizard/backend/orchestrator/nodes.py)
+- Lines changed: top-level import block.
+- Problem: `patent_miner_classes` was imported as a top-level module, which failed for the same reason as `tools.py`.
+- Change: Switched the import to `backend.orchestrator.patent_miner_classes`.
+- Why: Keeps orchestrator state types importable from the API entrypoint.
+
+- File: [backend/orchestrator/graph.py](C:/Users/Optim/Patent_Wizard/backend/orchestrator/graph.py)
+- Lines changed: top-level import block.
+- Problem: sibling imports used bare module names, so package loading could not resolve `nodes` and `tools`.
+- Change: Switched the imports to package-qualified `backend.orchestrator.*` paths.
+- Why: Ensures the graph module can be imported consistently through `backend.orchestrator.graph`.
+
+- File: [backend/app/main.py](C:/Users/Optim/Patent_Wizard/backend/app/main.py)
+- Lines changed: startup import order near the env bootstrap block.
+- Problem: orchestrator-dependent modules were imported before the orchestrator env was loaded, so `vector_config.py` could raise on missing `PROJECTION_PATH`.
+- Change: Moved the router imports below the orchestrator env load so config is available before `search.py` imports `backend.orchestrator.tools`.
+- Why: Makes API startup work in a clean process without requiring env vars to be preloaded externally.
+
+- File: [backend/app/api/eval.py](C:/Users/Optim/Patent_Wizard/backend/app/api/eval.py)
+- Lines changed: top-level `evaluate` import and `qrels_eval` handler import path.
+- Problem: importing the eval router forced the entire retrieval/eval stack to load during API startup, which pulled in heavyweight model dependencies unnecessarily.
+- Change: Moved the `evaluate` import inside the `qrels_eval` handler.
+- Why: Defers expensive dependencies until the eval endpoint is actually called and keeps the API boot path lighter.
+
+## 2026-04-20 12:02:09 CDT
+- File: [backend/app/scripts/retrieve_rerank.py](/mnt/c/Patent_Wizard/backend/app/scripts/retrieve_rerank.py)
+- Lines changed: fusion config/env handling near [backend/app/scripts/retrieve_rerank.py:78](/mnt/c/Patent_Wizard/backend/app/scripts/retrieve_rerank.py:78), `_query_claim_rows` at [backend/app/scripts/retrieve_rerank.py:347](/mnt/c/Patent_Wizard/backend/app/scripts/retrieve_rerank.py:347), and client-side hybrid helpers at [backend/app/scripts/retrieve_rerank.py:615](/mnt/c/Patent_Wizard/backend/app/scripts/retrieve_rerank.py:615) through [backend/app/scripts/retrieve_rerank.py:868](/mnt/c/Patent_Wizard/backend/app/scripts/retrieve_rerank.py:868).
+- Problem: the client-side hybrid fallback fused BM25 and vector legs with rank-based RRF, which did not approximate Weaviate's relative-score hybrid behavior and offered no raw/normalized score diagnostics.
+- Change: Added score-based relative fusion for the fallback path, requested BM25 raw scores from Weaviate, converted vector distance to higher-is-better relevance via `-distance`, kept the old RRF helper behind `CLIENT_HYBRID_FUSION_METHOD`, and added one-query debug logging for raw, normalized, fused, and source-leg metadata.
+- Why: Makes fallback hybrid ranking closer to Weaviate-style score blending while preserving the ability to compare against the older RRF behavior.
+
+- File: [backend/orchestrator/tools.py](/mnt/c/Patent_Wizard/backend/orchestrator/tools.py)
+- Lines changed: client hybrid config near [backend/orchestrator/tools.py:84](/mnt/c/Patent_Wizard/backend/orchestrator/tools.py:84), `_query_claim_rows` at [backend/orchestrator/tools.py:659](/mnt/c/Patent_Wizard/backend/orchestrator/tools.py:659), and hybrid fallback helpers at [backend/orchestrator/tools.py:719](/mnt/c/Patent_Wizard/backend/orchestrator/tools.py:719) through [backend/orchestrator/tools.py:963](/mnt/c/Patent_Wizard/backend/orchestrator/tools.py:963).
+- Problem: the orchestrator retrieval path had its own copy of the old RRF-only client-side hybrid fallback, so API retrieval would diverge from the script/eval path.
+- Change: Mirrored the relative-score client-side fusion, BM25 score fetching, debug logging, and `CLIENT_HYBRID_FUSION_METHOD` switch into the orchestrator fallback path without changing successful server-side hybrid retrieval.
+- Why: Keeps script-based evaluation and orchestrator retrieval aligned when hybrid falls back client-side.
+
+- File: [tests/test_retrieve_rerank_eval.py](/mnt/c/Patent_Wizard/tests/test_retrieve_rerank_eval.py)
+- Lines changed: added hybrid fusion helper tests at [tests/test_retrieve_rerank_eval.py:95](/mnt/c/Patent_Wizard/tests/test_retrieve_rerank_eval.py:95) through [tests/test_retrieve_rerank_eval.py:179](/mnt/c/Patent_Wizard/tests/test_retrieve_rerank_eval.py:179).
+- Problem: there was no regression coverage for overlapping candidates, single-leg candidates, equal-score normalization, or preservation of the old RRF helper.
+- Change: Added focused unit tests covering relative-score fusion ordering, degenerate equal-score handling, and the continued availability of the RRF fusion path.
+- Why: Reduces the risk of silently breaking the new fallback math or losing the comparison path.
+
+- File: [docs/SESSION_CHANGELOG.md](/mnt/c/Patent_Wizard/docs/SESSION_CHANGELOG.md)
+- Lines changed: new top-of-file session entry.
+- Problem: this task changed retrieval and test files without a matching timestamped audit entry.
+- Change: Logged the hybrid fallback fusion update and its test coverage.
+- Why: Preserves the repository handoff trail required by `AGENTS.md`.
+
+## 2026-04-20 11:26:23 CDT
+- File: [AGENTS.md](/mnt/c/Patent_Wizard/AGENTS.md)
+- Lines changed: `Required On Every User Request` and `Scope`.
+- Problem: the agent policy required changelog entries even for command-only or analysis-only responses with no repository edits.
+- Change: Removed the no-file-change logging requirement and explicitly disallowed changelog entries for no-file-change responses.
+- Why: Keeps `docs/SESSION_CHANGELOG.md` focused on actual repository modifications.
+
+- File: [docs/SESSION_CHANGELOG.md](/mnt/c/Patent_Wizard/docs/SESSION_CHANGELOG.md)
+- Lines changed: removed the recent no-file-change trace sections and added this policy-change entry.
+- Problem: the changelog had accumulated command-only trace entries that were noise rather than durable file-change history.
+- Change: Deleted the command-only/no-file-change sections from 2026-04-19 through 2026-04-20 and logged the cleanup.
+- Why: Restores the changelog as a concise audit trail for substantive repo changes.
+
+## 2026-04-19 16:24:24 CDT
+- File: [backend/validation/doc_level_qrels.jsonl](/mnt/c/Patent_Wizard/backend/validation/doc_level_qrels.jsonl)
+- Lines changed: new file with 40 JSONL rows derived from `backend/validation/qrels.jsonl`.
+- Problem: the repository only had the older claim-level qrels filename, which made it unclear which file should be used for explicit patent-level evaluation inputs.
+- Change: Added a separate doc-level qrels file named `doc_level_qrels.jsonl` containing `relevant_doc_ids` for the same query set.
+- Why: Preserves the original claim-level file while giving future eval runs and agents a clearly named patent-level qrels input.
+
+- File: [docs/SESSION_CHANGELOG.md](/mnt/c/Patent_Wizard/docs/SESSION_CHANGELOG.md)
+- Lines changed: new top-of-file session entry.
+- Problem: this task added a validation artifact and needed a matching timestamped audit entry.
+- Change: Logged the new doc-level qrels file creation.
+- Why: Keeps agent handoff history consistent with `AGENTS.md`.
+
+## 2026-04-19 16:11:25 CDT
+- File: [backend/app/scripts/retrieve_rerank.py](/mnt/c/Patent_Wizard/backend/app/scripts/retrieve_rerank.py)
+- Lines changed: patent-level qrels normalization and evaluation flow around `_extract_relevant_doc_ids`, `evaluate`, per-query CSV/XLSX output fields, and `--filter-missing-qrels` help text.
+- Problem: qrels evaluation still scored relevance at the claim level, so a relevant patent could be present in the top results without counting as a hit unless the expected claim id matched.
+- Change: Normalized qrels rows to patent `doc_id` relevance, deduped ranked results by patent for scoring, updated diagnostics to report relevant patent ids/ranks, and switched missing-qrels filtering to patent presence checks.
+- Why: Makes hit@10 and related metrics reflect patent-level retrieval success instead of over-penalizing claim-level mismatches.
+
+- File: [backend/app/scripts/qrels_mode_sweep_excel.py](/mnt/c/Patent_Wizard/backend/app/scripts/qrels_mode_sweep_excel.py)
+- Lines changed: `--filter-missing-qrels` CLI help text.
+- Problem: sweep help text still described the filter in terms of relevant claims.
+- Change: Updated the wording to relevant patents.
+- Why: Keeps the sweep script aligned with the new patent-level evaluation behavior.
+
+- File: [README.MD](/mnt/c/Patent_Wizard/README.MD)
+- Lines changed: qrels evaluation notes near the single-file qrels example and API notes section.
+- Problem: repository docs did not state that qrels are now normalized and scored at the patent level.
+- Change: Documented that evaluation accepts either `relevant_doc_ids` or `relevant_claim_ids` and scores against patent `doc_id`s.
+- Why: Reduces ambiguity for future runs and for agents reusing the eval tooling.
+
+- File: [tests/test_retrieve_rerank_eval.py](/mnt/c/Patent_Wizard/tests/test_retrieve_rerank_eval.py)
+- Lines changed: new file.
+- Problem: there was no focused regression coverage for claim-based qrels being normalized into patent-level metrics.
+- Change: Added tests covering doc-id extraction from qrels and patent-level scoring/output behavior.
+- Why: Helps prevent the eval path from silently drifting back to claim-level semantics.
+
+- File: [docs/SESSION_CHANGELOG.md](/mnt/c/Patent_Wizard/docs/SESSION_CHANGELOG.md)
+- Lines changed: new top-of-file session entry.
+- Problem: the prior task changed files without appending the required timestamped changelog entry.
+- Change: Added a backfilled session entry for the patent-level qrels work.
+- Why: Restores the audit trail expected by `AGENTS.md` for future agent handoffs.
+
 ## 2026-04-19 15:33:33 CDT
 - File: [.gitignore](/mnt/c/Patent_Wizard/.gitignore)
 - Lines changed: added ignore rules for [`.gitignore:40`](/mnt/c/Patent_Wizard/.gitignore:40) onward covering `backend/orchestrator/env` and `backend/orchestrator/.env`.

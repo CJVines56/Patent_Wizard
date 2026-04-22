@@ -75,11 +75,13 @@ SHARD_TO_PATH = {
 }
 VALID_RETRIEVAL_MODES = ("vector", "bm25", "hybrid")
 VALID_RERANK_SOURCES = ("lmdb", "weaviate")
+VALID_CLIENT_HYBRID_FUSION_METHODS = ("relative_score", "rrf")
 WEAVIATE_VECTOR_FETCH_BATCH_SIZE = max(1, int(os.environ.get("WEAVIATE_VECTOR_FETCH_BATCH_SIZE", "128")))
 WEAVIATE_VECTOR_FETCH_MODE = os.environ.get("WEAVIATE_VECTOR_FETCH_MODE", "auto").strip().lower() or "auto"
 
 _WEAVIATE_VECTOR_CLIENT = None
 _WEAVIATE_ENDPOINT_PRINTED = False
+_HYBRID_FUSION_DEBUG_PRINTED = False
 
 
 def _normalize_retrieval_mode(value: str | None) -> str:
@@ -114,6 +116,21 @@ def _normalize_rerank_source(value: str | None) -> str:
     return source
 
 
+def _normalize_client_hybrid_fusion_method(value: str | None) -> str:
+    method = str(value or "relative_score").strip().lower()
+    aliases = {
+        "relative_score_fusion": "relative_score",
+        "weaviate": "relative_score",
+    }
+    method = aliases.get(method, method)
+    if method not in VALID_CLIENT_HYBRID_FUSION_METHODS:
+        raise ValueError(
+            f"Unknown client hybrid fusion method '{value}'. "
+            f"Choose from: {list(VALID_CLIENT_HYBRID_FUSION_METHODS)}"
+        )
+    return method
+
+
 DEFAULT_RETRIEVAL_MODE = _normalize_retrieval_mode(
     os.environ.get("RETRIEVAL_MODE", os.environ.get("WEAVIATE_RETRIEVAL_MODE", "vector"))
 )
@@ -134,6 +151,11 @@ if DEFAULT_RERANK_SOURCE not in VALID_RERANK_SOURCES:
     )
 DEBUG_COMPARE_SAMPLE_N = int(os.environ.get("DEBUG_VECTOR_COMPARE_N", "10"))
 DEFAULT_PER_QUERY_TOPK = max(1, _safe_int(os.environ.get("PER_QUERY_TOPK"), 10))
+DEFAULT_CLIENT_HYBRID_FUSION_METHOD = _normalize_client_hybrid_fusion_method(
+    os.environ.get("CLIENT_HYBRID_FUSION_METHOD", "relative_score")
+)
+HYBRID_FUSION_DEBUG = _env_bool("HYBRID_FUSION_DEBUG", False)
+HYBRID_FUSION_DEBUG_TOPN = max(1, _safe_int(os.environ.get("HYBRID_FUSION_DEBUG_TOPN"), 10))
 
 
 @dataclass
@@ -145,6 +167,13 @@ class ClaimHit:
     text: str = ""
     distance: float | None = None
     score: float | None = None
+    retrieval_score: float | None = None
+    bm25_score_raw: float | None = None
+    bm25_score_norm: float | None = None
+    vector_score_raw: float | None = None
+    vector_score_norm: float | None = None
+    hybrid_fused_score: float | None = None
+    hybrid_source: str = ""
 
 
 def _is_vector_graphql_query(query: str) -> bool:
@@ -315,14 +344,28 @@ def _build_claim_retrieval_args(
     )
 
 
-def _query_claim_rows(retrieval_args: str) -> list[dict]:
+def _query_claim_rows(retrieval_args: str, *, include_score: bool = False) -> list[dict]:
+    additional_fields = "id distance"
+    if include_score:
+        additional_fields += " score"
     gql = (
         "{ Get { Claim("
         f"{retrieval_args}"
-        ") { claim_id doc_id claim_type text _additional { id distance } } } }"
+        ") { claim_id doc_id claim_type text _additional { "
+        f"{additional_fields}"
+        " } } } }"
     )
     data = _post_graphql(gql)
     return data.get("Get", {}).get("Claim", []) or []
+
+
+def _maybe_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _coerce_token_matrix(value: object, *, identity: str) -> np.ndarray:
@@ -464,6 +507,7 @@ def _rows_to_hits(items: list[dict]) -> list[ClaimHit]:
                 doc_id=it.get("doc_id", ""),
                 claim_type=str(it.get("claim_type") or ""),
                 text=rich_to_plain(str(it.get("text") or "")),
+                retrieval_score=_maybe_float(addl.get("score")),
             )
         )
     return hits
@@ -503,6 +547,21 @@ def _claim_base_id(claim_id: str) -> str:
     return f"{prefix}{num}"
 
 
+def _normalize_doc_id(value: str) -> str:
+    return str(value or "").strip()
+
+
+def _doc_id_from_claim_id(claim_id: str) -> str:
+    base_claim_id = _claim_base_id(claim_id)
+    if not base_claim_id:
+        return ""
+    marker = "-CLM-"
+    idx = base_claim_id.upper().find(marker)
+    if idx < 0:
+        return ""
+    return base_claim_id[:idx]
+
+
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -514,12 +573,140 @@ def _dedupe_preserve_order(values: list[str]) -> list[str]:
     return out
 
 
-def _is_relevant_claim_id(claim_id: str, relevant_base_ids: set[str]) -> bool:
-    base = _claim_base_id(claim_id)
-    return bool(base) and base in relevant_base_ids
+def _is_positive_relevance(value: object) -> bool:
+    try:
+        return float(value) > 0.0
+    except (TypeError, ValueError):
+        return False
 
 
-def _fuse_hybrid_hits(
+def _extract_relevant_doc_ids(row: dict) -> set[str]:
+    doc_ids: set[str] = set()
+    for doc_id in (row.get("relevant_doc_ids") or []):
+        normalized = _normalize_doc_id(doc_id)
+        if normalized:
+            doc_ids.add(normalized)
+    for field in ("relevant_claim_ids", "relevant_ids"):
+        for claim_id in (row.get(field) or []):
+            normalized = _doc_id_from_claim_id(str(claim_id))
+            if normalized:
+                doc_ids.add(normalized)
+    if doc_ids:
+        return doc_ids
+
+    rel = row.get("relevance", row.get("rel", 1))
+    if not _is_positive_relevance(rel):
+        return set()
+
+    doc_id = _normalize_doc_id(row.get("doc_id"))
+    if doc_id:
+        return {doc_id}
+
+    claim_id = _normalize_claim_id(row.get("claim_id"))
+    derived_doc_id = _doc_id_from_claim_id(claim_id)
+    return {derived_doc_id} if derived_doc_id else set()
+
+
+def _is_relevant_doc_id(doc_id: str, relevant_doc_ids: set[str]) -> bool:
+    normalized = _normalize_doc_id(doc_id)
+    return bool(normalized) and normalized in relevant_doc_ids
+
+
+def _merge_claim_hit_metadata(existing: ClaimHit, candidate: ClaimHit) -> None:
+    if existing.distance is None and candidate.distance is not None:
+        existing.distance = candidate.distance
+    if existing.retrieval_score is None and candidate.retrieval_score is not None:
+        existing.retrieval_score = candidate.retrieval_score
+    if not existing.doc_id and candidate.doc_id:
+        existing.doc_id = candidate.doc_id
+    if not existing.claim_type and candidate.claim_type:
+        existing.claim_type = candidate.claim_type
+    if not existing.text and candidate.text:
+        existing.text = candidate.text
+    if not existing.uuid and candidate.uuid:
+        existing.uuid = candidate.uuid
+
+
+def _normalize_relative_scores(raw_scores: dict[str, float]) -> dict[str, float]:
+    if not raw_scores:
+        return {}
+    min_score = min(raw_scores.values())
+    max_score = max(raw_scores.values())
+    # A constant-score leg carries no ordering signal, so we zero it out instead
+    # of filling with ones and letting that leg dominate the fused ranking.
+    if math.isclose(min_score, max_score):
+        return {key: 0.0 for key in raw_scores}
+    scale = max_score - min_score
+    return {key: (value - min_score) / scale for key, value in raw_scores.items()}
+
+
+def _vector_relevance_score(hit: ClaimHit) -> float | None:
+    if hit.distance is not None:
+        # Weaviate nearVector returns distance where lower is better. Negating it
+        # converts the leg into a higher-is-better relevance score for blending.
+        return -float(hit.distance)
+    if hit.retrieval_score is not None:
+        return float(hit.retrieval_score)
+    if hit.score is not None:
+        return float(hit.score)
+    return None
+
+
+def _bm25_relevance_score(hit: ClaimHit) -> float | None:
+    if hit.retrieval_score is not None:
+        return float(hit.retrieval_score)
+    if hit.score is not None:
+        return float(hit.score)
+    return None
+
+
+def _hybrid_source_label(*, has_vector: bool, has_bm25: bool) -> str:
+    if has_vector and has_bm25:
+        return "both"
+    if has_vector:
+        return "vector_only"
+    if has_bm25:
+        return "bm25_only"
+    return "none"
+
+
+def _fmt_debug_float(value: float | None) -> str:
+    return "" if value is None else f"{value:.6f}"
+
+
+def _log_hybrid_fusion_debug_once(
+    query: str,
+    hits: list[ClaimHit],
+    *,
+    alpha: float,
+    fusion_method: str,
+) -> None:
+    global _HYBRID_FUSION_DEBUG_PRINTED
+    if not HYBRID_FUSION_DEBUG or _HYBRID_FUSION_DEBUG_PRINTED:
+        return
+    _HYBRID_FUSION_DEBUG_PRINTED = True
+    print(
+        "[debug] client hybrid fusion query=%s alpha=%.6f method=%s"
+        % (json.dumps(query), alpha, fusion_method)
+    )
+    for rank, hit in enumerate(hits[:HYBRID_FUSION_DEBUG_TOPN], start=1):
+        print(
+            "[debug] fusion rank=%s key=%s source=%s bm25_raw=%s bm25_norm=%s "
+            "vector_raw=%s vector_norm=%s fused=%s"
+            % (
+                rank,
+                _claim_key(hit),
+                hit.hybrid_source,
+                _fmt_debug_float(hit.bm25_score_raw),
+                _fmt_debug_float(hit.bm25_score_norm),
+                _fmt_debug_float(hit.vector_score_raw),
+                _fmt_debug_float(hit.vector_score_norm),
+                _fmt_debug_float(hit.hybrid_fused_score),
+            )
+        )
+
+
+def _fuse_hybrid_hits_rrf(
     vector_hits: list[ClaimHit],
     bm25_hits: list[ClaimHit],
     alpha: float,
@@ -534,6 +721,8 @@ def _fuse_hybrid_hits(
     }
     score_by_key: dict[str, float] = {}
     hit_by_key: dict[str, ClaimHit] = {}
+    vector_keys = {_claim_key(hit) for hit in vector_hits if _claim_key(hit)}
+    bm25_keys = {_claim_key(hit) for hit in bm25_hits if _claim_key(hit)}
 
     for source, hits in (("vector", vector_hits), ("bm25", bm25_hits)):
         w = weights[source]
@@ -546,18 +735,101 @@ def _fuse_hybrid_hits(
             if key not in hit_by_key:
                 hit_by_key[key] = hit
             else:
-                if hit_by_key[key].distance is None and hit.distance is not None:
-                    hit_by_key[key].distance = hit.distance
-                if not hit_by_key[key].doc_id and hit.doc_id:
-                    hit_by_key[key].doc_id = hit.doc_id
-                if not hit_by_key[key].claim_type and hit.claim_type:
-                    hit_by_key[key].claim_type = hit.claim_type
-                if not hit_by_key[key].text and hit.text:
-                    hit_by_key[key].text = hit.text
+                _merge_claim_hit_metadata(hit_by_key[key], hit)
             score_by_key[key] = score_by_key.get(key, 0.0) + (w / float(rrf_k + rank))
 
     ranked_keys = sorted(score_by_key, key=lambda k: score_by_key[k], reverse=True)[: int(limit)]
-    return [hit_by_key[k] for k in ranked_keys]
+    ranked_hits = [hit_by_key[k] for k in ranked_keys]
+    for key, hit in zip(ranked_keys, ranked_hits):
+        hit.hybrid_fused_score = score_by_key[key]
+        hit.hybrid_source = _hybrid_source_label(
+            has_vector=key in vector_keys,
+            has_bm25=key in bm25_keys,
+        )
+    return ranked_hits
+
+
+def _fuse_hybrid_hits_relative_score(
+    vector_hits: list[ClaimHit],
+    bm25_hits: list[ClaimHit],
+    alpha: float,
+    limit: int,
+) -> list[ClaimHit]:
+    alpha = _clamp_hybrid_alpha(alpha)
+    hit_by_key: dict[str, ClaimHit] = {}
+    vector_raw_by_key: dict[str, float] = {}
+    bm25_raw_by_key: dict[str, float] = {}
+    vector_keys: set[str] = set()
+    bm25_keys: set[str] = set()
+
+    for hit in vector_hits:
+        key = _claim_key(hit)
+        if not key:
+            continue
+        vector_keys.add(key)
+        if key not in hit_by_key:
+            hit_by_key[key] = hit
+        else:
+            _merge_claim_hit_metadata(hit_by_key[key], hit)
+        raw_score = _vector_relevance_score(hit)
+        if raw_score is not None:
+            vector_raw_by_key[key] = raw_score
+
+    for hit in bm25_hits:
+        key = _claim_key(hit)
+        if not key:
+            continue
+        bm25_keys.add(key)
+        if key not in hit_by_key:
+            hit_by_key[key] = hit
+        else:
+            _merge_claim_hit_metadata(hit_by_key[key], hit)
+        raw_score = _bm25_relevance_score(hit)
+        if raw_score is not None:
+            bm25_raw_by_key[key] = raw_score
+
+    vector_norm_by_key = _normalize_relative_scores(vector_raw_by_key)
+    bm25_norm_by_key = _normalize_relative_scores(bm25_raw_by_key)
+
+    # Approximate Weaviate-style relative score fusion client-side by normalizing
+    # each leg to [0,1] and blending score magnitudes. Unlike RRF, this uses the
+    # observed score spread rather than only the rank position of each hit.
+    fused_score_by_key: dict[str, float] = {}
+    for key, hit in hit_by_key.items():
+        bm25_norm = bm25_norm_by_key.get(key, 0.0)
+        vector_norm = vector_norm_by_key.get(key, 0.0)
+        hit.bm25_score_raw = bm25_raw_by_key.get(key)
+        hit.bm25_score_norm = bm25_norm
+        hit.vector_score_raw = vector_raw_by_key.get(key)
+        hit.vector_score_norm = vector_norm
+        hit.hybrid_source = _hybrid_source_label(
+            has_vector=key in vector_keys,
+            has_bm25=key in bm25_keys,
+        )
+        hit.hybrid_fused_score = ((1.0 - alpha) * bm25_norm) + (alpha * vector_norm)
+        fused_score_by_key[key] = hit.hybrid_fused_score
+
+    ranked_keys = sorted(
+        fused_score_by_key,
+        key=lambda key: (fused_score_by_key[key], bm25_norm_by_key.get(key, 0.0), vector_norm_by_key.get(key, 0.0)),
+        reverse=True,
+    )[: int(limit)]
+    return [hit_by_key[key] for key in ranked_keys]
+
+
+def _fuse_hybrid_hits(
+    vector_hits: list[ClaimHit],
+    bm25_hits: list[ClaimHit],
+    alpha: float,
+    limit: int,
+    *,
+    fusion_method: str = DEFAULT_CLIENT_HYBRID_FUSION_METHOD,
+    rrf_k: int = 60,
+) -> list[ClaimHit]:
+    method = _normalize_client_hybrid_fusion_method(fusion_method)
+    if method == "rrf":
+        return _fuse_hybrid_hits_rrf(vector_hits, bm25_hits, alpha, limit, rrf_k=rrf_k)
+    return _fuse_hybrid_hits_relative_score(vector_hits, bm25_hits, alpha, limit)
 
 
 def _retrieve_hybrid_client_fusion(
@@ -578,17 +850,24 @@ def _retrieve_hybrid_client_fusion(
     except Exception as ve:
         print(f"[warn] hybrid nearVector leg failed: {ve}")
     try:
-        bm25_items = _query_claim_rows(bm25_args)
+        bm25_items = _query_claim_rows(bm25_args, include_score=True)
     except Exception as be:
         print(f"[warn] hybrid bm25 leg failed: {be}")
     if not vector_items and not bm25_items:
         raise RuntimeError("both hybrid legs failed (nearVector and bm25)")
-    return _fuse_hybrid_hits(
+    fused_hits = _fuse_hybrid_hits(
         _rows_to_hits(vector_items),
         _rows_to_hits(bm25_items),
         alpha,
         int(limit),
     )
+    _log_hybrid_fusion_debug_once(
+        query,
+        fused_hits,
+        alpha=alpha,
+        fusion_method=DEFAULT_CLIENT_HYBRID_FUSION_METHOD,
+    )
+    return fused_hits
 
 
 def retrieve_claims(
@@ -779,6 +1058,23 @@ def lookup_patent(doc_id: str, limit: int = 200) -> list[ClaimHit]:
     return _rows_to_hits(data["Get"]["Claim"])
 
 
+def _doc_id_exists(doc_id: str) -> bool:
+    normalized = _normalize_doc_id(doc_id)
+    if not normalized:
+        return False
+    where = (
+        "{path:[\"doc_id\"],operator:Equal,valueText:"
+        f"{json.dumps(normalized)}}}"
+    )
+    gql = (
+        "{ Get { Claim("
+        f"where:{where}, limit:1"
+        ") { doc_id } } }"
+    )
+    data = _post_graphql(gql)
+    return bool(data.get("Get", {}).get("Claim", []) or [])
+
+
 def _lookup_claim_object_ids_by_claim_id(
     claim_id: str,
     *,
@@ -831,15 +1127,6 @@ def _lookup_claim_object_ids_by_claim_id(
         seen.add(object_id)
         out.append(object_id)
     return out
-
-
-def _lookup_claim_uuid_by_claim_id(claim_id: str) -> str | None:
-    object_ids = _lookup_claim_object_ids_by_claim_id(claim_id, include_chunk_variants=True)
-    return object_ids[0] if object_ids else None
-
-
-def _claim_id_exists(claim_id: str) -> bool:
-    return _lookup_claim_uuid_by_claim_id(claim_id) is not None
 
 
 def precision_at_k(ranked_ids: list[str], relevant: set[str], k: int) -> float:
@@ -896,15 +1183,17 @@ def _first_relevant_rank(ranked_ids: list[str], relevant: set[str]) -> int | Non
 def _write_per_query_csv(rows: list[dict], path: Path, *, topk: int = 10) -> None:
     topk = max(1, int(topk))
     path.parent.mkdir(parents=True, exist_ok=True)
-    relevant_claim_cols = [f"relevant_claim_{i}" for i in range(1, topk + 1)]
-    relevant_claim_maxsim_cols = [f"relevant_claim_{i}_maxsim" for i in range(1, topk + 1)]
-    relevant_claim_candidate_rank_cols = [f"relevant_claim_{i}_candidate_rank" for i in range(1, topk + 1)]
-    relevant_claim_reranked_rank_cols = [f"relevant_claim_{i}_reranked_rank" for i in range(1, topk + 1)]
+    relevant_doc_cols = [f"relevant_doc_{i}" for i in range(1, topk + 1)]
+    relevant_doc_maxsim_cols = [f"relevant_doc_{i}_maxsim" for i in range(1, topk + 1)]
+    relevant_doc_candidate_rank_cols = [f"relevant_doc_{i}_candidate_rank" for i in range(1, topk + 1)]
+    relevant_doc_reranked_rank_cols = [f"relevant_doc_{i}_reranked_rank" for i in range(1, topk + 1)]
     retrieved_claim_id_cols = [f"retrieved_top{i}_claim_id" for i in range(1, topk + 1)]
+    retrieved_doc_id_cols = [f"retrieved_top{i}_doc_id" for i in range(1, topk + 1)]
     retrieved_claim_maxsim_cols = [f"retrieved_top{i}_maxsim" for i in range(1, topk + 1)]
     retrieved_claim_rel_cols = [f"retrieved_top{i}_is_relevant" for i in range(1, topk + 1)]
     retrieved_claim_text_cols = [f"retrieved_top{i}_claim_text" for i in range(1, topk + 1)]
     reranked_claim_id_cols = [f"reranked_top{i}_claim_id" for i in range(1, topk + 1)]
+    reranked_doc_id_cols = [f"reranked_top{i}_doc_id" for i in range(1, topk + 1)]
     reranked_claim_maxsim_cols = [f"reranked_top{i}_maxsim" for i in range(1, topk + 1)]
     reranked_claim_text_cols = [f"reranked_top{i}_claim_text" for i in range(1, topk + 1)]
     reranked_claim_rel_cols = [f"reranked_top{i}_is_relevant" for i in range(1, topk + 1)]
@@ -912,11 +1201,11 @@ def _write_per_query_csv(rows: list[dict], path: Path, *, topk: int = 10) -> Non
         "status",
         "query",
         "num_relevant",
-        "relevant_claim_extra_count",
-        *relevant_claim_cols,
-        *relevant_claim_maxsim_cols,
-        *relevant_claim_candidate_rank_cols,
-        *relevant_claim_reranked_rank_cols,
+        "relevant_doc_extra_count",
+        *relevant_doc_cols,
+        *relevant_doc_maxsim_cols,
+        *relevant_doc_candidate_rank_cols,
+        *relevant_doc_reranked_rank_cols,
         "candidate_k",
         "rerank_k",
         "candidate_hit",
@@ -932,10 +1221,12 @@ def _write_per_query_csv(rows: list[dict], path: Path, *, topk: int = 10) -> Non
         "ndcg@10",
         "mrr@10",
         *retrieved_claim_id_cols,
+        *retrieved_doc_id_cols,
         *retrieved_claim_maxsim_cols,
         *retrieved_claim_rel_cols,
         *retrieved_claim_text_cols,
         *reranked_claim_id_cols,
+        *reranked_doc_id_cols,
         *reranked_claim_maxsim_cols,
         *reranked_claim_rel_cols,
         *reranked_claim_text_cols,
@@ -953,7 +1244,7 @@ def _write_per_query_topk_csv(rows: list[dict], path: Path) -> None:
         "status",
         "query",
         "num_relevant",
-        "relevant_claim_ids",
+        "relevant_doc_ids",
         "candidate_k",
         "rerank_k",
         "rank",
@@ -1024,7 +1315,7 @@ def _write_per_query_xlsx(
             rerank_k = row.get("rerank_k", "")
             relevant_ids = []
             for i in range(1, topk + 1):
-                rel_id = str(row.get(f"relevant_claim_{i}", "") or "").strip()
+                rel_id = str(row.get(f"relevant_doc_{i}", "") or "").strip()
                 if rel_id:
                     relevant_ids.append(rel_id)
             rel_joined = "|".join(relevant_ids)
@@ -1034,14 +1325,14 @@ def _write_per_query_xlsx(
                         "status": status,
                         "query": query,
                         "num_relevant": num_relevant,
-                        "relevant_claim_ids": rel_joined,
+                        "relevant_doc_ids": rel_joined,
                         "candidate_k": candidate_k,
                         "rerank_k": rerank_k,
                         "rank": rank,
                         "candidate_rank": "",
                         "reranked_rank": rank,
                         "claim_id": row.get(f"reranked_top{rank}_claim_id", ""),
-                        "doc_id": "",
+                        "doc_id": row.get(f"reranked_top{rank}_doc_id", ""),
                         "claim_type": "",
                         "candidate_maxsim": "",
                         "reranked_maxsim": row.get(f"reranked_top{rank}_maxsim", ""),
@@ -1230,6 +1521,7 @@ def evaluate(
     per_query_topk: int = DEFAULT_PER_QUERY_TOPK,
 ) -> dict:
     print(f"[eval] filter_missing_qrels={bool(filter_missing_qrels)}")
+    print("[eval] qrels_level=patent_doc_id")
     retrieval_mode = _normalize_retrieval_mode(retrieval_mode)
     hybrid_alpha = _clamp_hybrid_alpha(hybrid_alpha)
     rerank_source = _normalize_rerank_source(rerank_source)
@@ -1247,11 +1539,7 @@ def evaluate(
             q = str(row.get("query") or "").strip()
             if not q:
                 continue
-            rel_ids = {
-                str(claim_id).strip()
-                for claim_id in (row.get("relevant_claim_ids", []) or [])
-                if str(claim_id).strip()
-            }
+            rel_ids = _extract_relevant_doc_ids(row)
             if q in qrels:
                 qrels[q].update(rel_ids)
             else:
@@ -1278,10 +1566,10 @@ def evaluate(
             q = row.get("query", "")
             rel = qrels.get(q, set())
             keep = False
-            for claim_id in rel:
-                if claim_id not in cache:
-                    cache[claim_id] = _claim_id_exists(claim_id)
-                if cache[claim_id]:
+            for doc_id in rel:
+                if doc_id not in cache:
+                    cache[doc_id] = _doc_id_exists(doc_id)
+                if cache[doc_id]:
                     keep = True
                     break
             if keep:
@@ -1294,7 +1582,7 @@ def evaluate(
                         "status": "filtered_missing_qrels",
                         "query": q,
                         "num_relevant": len(rel),
-                        "relevant_claim_extra_count": max(0, len(sorted_rel) - topk),
+                        "relevant_doc_extra_count": max(0, len(sorted_rel) - topk),
                         "candidate_k": int(limit),
                         "rerank_k": int(rerank_k),
                         "candidate_hit": False,
@@ -1311,15 +1599,17 @@ def evaluate(
                         "mrr@10": 0.0,
                     }
                     for idx in range(1, topk + 1):
-                        row_out[f"relevant_claim_{idx}"] = sorted_rel[idx - 1] if idx <= len(sorted_rel) else ""
-                        row_out[f"relevant_claim_{idx}_maxsim"] = ""
-                        row_out[f"relevant_claim_{idx}_candidate_rank"] = ""
-                        row_out[f"relevant_claim_{idx}_reranked_rank"] = ""
+                        row_out[f"relevant_doc_{idx}"] = sorted_rel[idx - 1] if idx <= len(sorted_rel) else ""
+                        row_out[f"relevant_doc_{idx}_maxsim"] = ""
+                        row_out[f"relevant_doc_{idx}_candidate_rank"] = ""
+                        row_out[f"relevant_doc_{idx}_reranked_rank"] = ""
                         row_out[f"retrieved_top{idx}_claim_id"] = ""
+                        row_out[f"retrieved_top{idx}_doc_id"] = ""
                         row_out[f"retrieved_top{idx}_maxsim"] = ""
                         row_out[f"retrieved_top{idx}_is_relevant"] = False
                         row_out[f"retrieved_top{idx}_claim_text"] = ""
                         row_out[f"reranked_top{idx}_claim_id"] = ""
+                        row_out[f"reranked_top{idx}_doc_id"] = ""
                         row_out[f"reranked_top{idx}_maxsim"] = ""
                         row_out[f"reranked_top{idx}_is_relevant"] = False
                         row_out[f"reranked_top{idx}_claim_text"] = ""
@@ -1332,7 +1622,7 @@ def evaluate(
                                 "status": "filtered_missing_qrels",
                                 "query": q,
                                 "num_relevant": len(rel),
-                                "relevant_claim_ids": "|".join(sorted(rel)),
+                                "relevant_doc_ids": "|".join(sorted(rel)),
                                 "candidate_k": int(limit),
                                 "rerank_k": int(rerank_k),
                                 "rank": rank,
@@ -1352,7 +1642,7 @@ def evaluate(
                         )
         queries = filtered
         total_q = len(queries)
-        print(f"[eval] filtered {dropped} query(ies) with no relevant claims in index")
+        print(f"[eval] filtered {dropped} query(ies) with no relevant patents in index")
     for i, row in enumerate(queries, start=1):
         q = row.get("query", "")
         if not q:
@@ -1372,29 +1662,26 @@ def evaluate(
         print(
             f"[timing] q={i}/{total_q} retrieval_ms={retrieval_ms:.1f} candidates={len(hits)}"
         )
-        candidate_ids = [h.claim_id for h in hits]
-        candidate_base_ids = [_claim_base_id(cid) for cid in candidate_ids]
-        rel_base_ids = {
-            _claim_base_id(claim_id)
-            for claim_id in rel
-            if _claim_base_id(claim_id)
-        }
-        candidate_rank_by_base: dict[str, int] = {}
-        for idx, base_id in enumerate(candidate_base_ids, start=1):
-            if not base_id or base_id in candidate_rank_by_base:
+        rel_doc_ids = {_normalize_doc_id(doc_id) for doc_id in rel if _normalize_doc_id(doc_id)}
+        candidate_doc_ids = _dedupe_preserve_order([
+            _normalize_doc_id(h.doc_id) for h in hits if _normalize_doc_id(h.doc_id)
+        ])
+        candidate_rank_by_doc: dict[str, int] = {}
+        for idx, doc_id in enumerate(candidate_doc_ids, start=1):
+            if not doc_id or doc_id in candidate_rank_by_doc:
                 continue
-            candidate_rank_by_base[base_id] = idx
-        candidate_hit_by_base: dict[str, ClaimHit] = {}
+            candidate_rank_by_doc[doc_id] = idx
+        candidate_hit_by_doc: dict[str, ClaimHit] = {}
         for hit in hits:
-            base_id = _claim_base_id(hit.claim_id)
-            if base_id and base_id not in candidate_hit_by_base:
-                candidate_hit_by_base[base_id] = hit
-        candidate_relevant_rank_by_base = {
-            base_id: rank
-            for base_id, rank in candidate_rank_by_base.items()
-            if base_id in rel_base_ids
+            doc_id = _normalize_doc_id(hit.doc_id)
+            if doc_id and doc_id not in candidate_hit_by_doc:
+                candidate_hit_by_doc[doc_id] = hit
+        candidate_relevant_rank_by_doc = {
+            doc_id: rank
+            for doc_id, rank in candidate_rank_by_doc.items()
+            if doc_id in rel_doc_ids
         }
-        candidate_ranks = sorted(candidate_relevant_rank_by_base.values())
+        candidate_ranks = sorted(candidate_relevant_rank_by_doc.values())
         candidate_hit = bool(candidate_ranks)
         q_tokens = _embed_query_tokens(q, rerank_shard)
         candidate_object_ids_by_base: dict[str, list[str]] = {}
@@ -1516,18 +1803,19 @@ def evaluate(
                 sample_n=debug_compare_n,
                 max_abs_tol=debug_compare_max_abs_tol,
             )
-        ranked_ids = [h.claim_id for h in ranked]
-        ranked_base_ids = [_claim_base_id(cid) for cid in ranked_ids]
-        reranked_rank_by_base: dict[str, int] = {}
-        for idx, base_id in enumerate(ranked_base_ids, start=1):
-            if not base_id or base_id in reranked_rank_by_base:
+        ranked_doc_ids = _dedupe_preserve_order([
+            _normalize_doc_id(h.doc_id) for h in ranked if _normalize_doc_id(h.doc_id)
+        ])
+        reranked_rank_by_doc: dict[str, int] = {}
+        for idx, doc_id in enumerate(ranked_doc_ids, start=1):
+            if not doc_id or doc_id in reranked_rank_by_doc:
                 continue
-            reranked_rank_by_base[base_id] = idx
-        ranked_metric_ids = _dedupe_preserve_order(ranked_base_ids)
-        p10 = precision_at_k(ranked_metric_ids, rel_base_ids, 10)
-        r10 = recall_at_k(ranked_metric_ids, rel_base_ids, 10)
-        n10 = ndcg_at_k(ranked_metric_ids, rel_base_ids, 10)
-        m10 = mrr_at_k(ranked_metric_ids, rel_base_ids, 10)
+            reranked_rank_by_doc[doc_id] = idx
+        ranked_metric_ids = ranked_doc_ids
+        p10 = precision_at_k(ranked_metric_ids, rel_doc_ids, 10)
+        r10 = recall_at_k(ranked_metric_ids, rel_doc_ids, 10)
+        n10 = ndcg_at_k(ranked_metric_ids, rel_doc_ids, 10)
+        m10 = mrr_at_k(ranked_metric_ids, rel_doc_ids, 10)
         metrics["precision@10"].append(p10)
         metrics["recall@10"].append(r10)
         metrics["ndcg@10"].append(n10)
@@ -1538,28 +1826,27 @@ def evaluate(
             sorted_rel = sorted(rel)
             retrieved_topk = hits[:topk]
             reranked_topk = ranked[:topk]
-            reranked_top10 = ranked[:10]
-            reranked_top10_rank_by_base: dict[str, int] = {}
-            for idx, hit in enumerate(reranked_top10, start=1):
-                base_id = _claim_base_id(hit.claim_id)
-                if not base_id or base_id not in rel_base_ids or base_id in reranked_top10_rank_by_base:
-                    continue
-                reranked_top10_rank_by_base[base_id] = idx
-            reranked_top10_ranks = sorted(reranked_top10_rank_by_base.values())
+            reranked_top10_doc_ids = ranked_metric_ids[:10]
+            reranked_top10_rank_by_doc = {
+                doc_id: idx
+                for idx, doc_id in enumerate(reranked_top10_doc_ids, start=1)
+                if doc_id in rel_doc_ids
+            }
+            reranked_top10_ranks = sorted(reranked_top10_rank_by_doc.values())
             row_out = {
                 "status": "evaluated",
                 "query": q,
                 "num_relevant": len(rel),
-                "relevant_claim_extra_count": max(0, len(sorted_rel) - topk),
+                "relevant_doc_extra_count": max(0, len(sorted_rel) - topk),
                 "candidate_k": int(limit),
                 "rerank_k": int(rerank_k),
                 "candidate_hit": candidate_hit,
                 "candidate_hits_count": len(candidate_ranks),
                 "candidate_first_relevant_rank": candidate_ranks[0] if candidate_ranks else "",
                 "candidate_relevant_ranks": "|".join(str(r) for r in candidate_ranks),
-                "reranked_hit_at_10": bool(reranked_top10_rank_by_base),
-                "reranked_hits_at_10": len(reranked_top10_rank_by_base),
-                "reranked_first_relevant_rank": _first_relevant_rank(ranked_base_ids, rel_base_ids) or "",
+                "reranked_hit_at_10": bool(reranked_top10_rank_by_doc),
+                "reranked_hits_at_10": len(reranked_top10_rank_by_doc),
+                "reranked_first_relevant_rank": _first_relevant_rank(ranked_metric_ids, rel_doc_ids) or "",
                 "reranked_relevant_ranks_at_10": "|".join(str(r) for r in reranked_top10_ranks),
                 "precision@10": p10,
                 "recall@10": r10,
@@ -1567,35 +1854,38 @@ def evaluate(
                 "mrr@10": m10,
             }
             for idx in range(1, topk + 1):
-                row_out[f"relevant_claim_{idx}"] = sorted_rel[idx - 1] if idx <= len(sorted_rel) else ""
-                rel_claim = sorted_rel[idx - 1] if idx <= len(sorted_rel) else ""
-                rel_claim_base = _claim_base_id(rel_claim)
-                row_out[f"relevant_claim_{idx}_maxsim"] = _fmt_score(_claim_maxsim(rel_claim))
-                row_out[f"relevant_claim_{idx}_candidate_rank"] = candidate_rank_by_base.get(rel_claim_base, "")
-                row_out[f"relevant_claim_{idx}_reranked_rank"] = reranked_rank_by_base.get(rel_claim_base, "")
+                rel_doc = sorted_rel[idx - 1] if idx <= len(sorted_rel) else ""
+                row_out[f"relevant_doc_{idx}"] = rel_doc
+                row_out[f"relevant_doc_{idx}_maxsim"] = ""
+                row_out[f"relevant_doc_{idx}_candidate_rank"] = candidate_rank_by_doc.get(rel_doc, "")
+                row_out[f"relevant_doc_{idx}_reranked_rank"] = reranked_rank_by_doc.get(rel_doc, "")
                 if idx <= len(retrieved_topk):
                     cand = retrieved_topk[idx - 1]
                     row_out[f"retrieved_top{idx}_claim_id"] = cand.claim_id
+                    row_out[f"retrieved_top{idx}_doc_id"] = cand.doc_id
                     candidate_score = _object_maxsim(cand.uuid, claim_id=cand.claim_id) if cand.uuid else None
                     if candidate_score is None:
                         candidate_score = _claim_maxsim(cand.claim_id)
                     row_out[f"retrieved_top{idx}_maxsim"] = _fmt_score(candidate_score)
-                    row_out[f"retrieved_top{idx}_is_relevant"] = _is_relevant_claim_id(cand.claim_id, rel_base_ids)
+                    row_out[f"retrieved_top{idx}_is_relevant"] = _is_relevant_doc_id(cand.doc_id, rel_doc_ids)
                     row_out[f"retrieved_top{idx}_claim_text"] = cand.text
                 else:
                     row_out[f"retrieved_top{idx}_claim_id"] = ""
+                    row_out[f"retrieved_top{idx}_doc_id"] = ""
                     row_out[f"retrieved_top{idx}_maxsim"] = ""
                     row_out[f"retrieved_top{idx}_is_relevant"] = False
                     row_out[f"retrieved_top{idx}_claim_text"] = ""
                 if idx <= len(reranked_topk):
                     hit = reranked_topk[idx - 1]
                     row_out[f"reranked_top{idx}_claim_id"] = hit.claim_id
+                    row_out[f"reranked_top{idx}_doc_id"] = hit.doc_id
                     hit_score = hit.score if hit.score is not None else _claim_maxsim(hit.claim_id)
                     row_out[f"reranked_top{idx}_maxsim"] = _fmt_score(hit_score)
-                    row_out[f"reranked_top{idx}_is_relevant"] = _is_relevant_claim_id(hit.claim_id, rel_base_ids)
+                    row_out[f"reranked_top{idx}_is_relevant"] = _is_relevant_doc_id(hit.doc_id, rel_doc_ids)
                     row_out[f"reranked_top{idx}_claim_text"] = hit.text
                 else:
                     row_out[f"reranked_top{idx}_claim_id"] = ""
+                    row_out[f"reranked_top{idx}_doc_id"] = ""
                     row_out[f"reranked_top{idx}_maxsim"] = ""
                     row_out[f"reranked_top{idx}_is_relevant"] = False
                     row_out[f"reranked_top{idx}_claim_text"] = ""
@@ -1604,9 +1894,9 @@ def evaluate(
             sorted_rel = "|".join(sorted(rel))
             topk_hits = ranked[:topk]
             for rank, h in enumerate(topk_hits, start=1):
-                candidate_base_id = _claim_base_id(h.claim_id)
-                candidate_hit_row = candidate_hit_by_base.get(candidate_base_id)
-                candidate_rank = candidate_rank_by_base.get(candidate_base_id, "")
+                candidate_doc_id = _normalize_doc_id(h.doc_id)
+                candidate_hit_row = candidate_hit_by_doc.get(candidate_doc_id)
+                candidate_rank = candidate_rank_by_doc.get(candidate_doc_id, "")
                 candidate_score_value = (
                     _object_maxsim(candidate_hit_row.uuid, claim_id=h.claim_id)
                     if candidate_hit_row is not None and candidate_hit_row.uuid
@@ -1621,7 +1911,7 @@ def evaluate(
                         "status": "evaluated",
                         "query": q,
                         "num_relevant": len(rel),
-                        "relevant_claim_ids": sorted_rel,
+                        "relevant_doc_ids": sorted_rel,
                         "candidate_k": int(limit),
                         "rerank_k": int(rerank_k),
                         "rank": rank,
@@ -1638,7 +1928,7 @@ def evaluate(
                             else f"{candidate_hit_row.distance:.6f}"
                         ),
                         "distance": "" if h.distance is None else f"{h.distance:.6f}",
-                        "is_relevant": _is_relevant_claim_id(h.claim_id, rel_base_ids),
+                        "is_relevant": _is_relevant_doc_id(h.doc_id, rel_doc_ids),
                         "text": h.text,
                     }
                 )
@@ -1649,7 +1939,7 @@ def evaluate(
                             "status": "evaluated",
                             "query": q,
                             "num_relevant": len(rel),
-                            "relevant_claim_ids": sorted_rel,
+                            "relevant_doc_ids": sorted_rel,
                             "candidate_k": int(limit),
                             "rerank_k": int(rerank_k),
                             "rank": rank,
@@ -1939,7 +2229,7 @@ def main():
         "--filter-missing-qrels",
         action=argparse.BooleanOptionalAction,
         default=_env_bool("FILTER_MISSING_QRELS", False),
-        help="Drop queries whose relevant claim_ids are not present in Weaviate (default: off).",
+        help="Drop queries whose relevant patent doc_ids are not present in Weaviate (default: off).",
     )
     args = parser.parse_args()
     args.hybrid_alpha = _clamp_hybrid_alpha(args.hybrid_alpha)
