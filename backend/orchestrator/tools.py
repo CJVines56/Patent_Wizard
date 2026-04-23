@@ -1406,7 +1406,7 @@ def retrieve_context(state: Patent_Miner_State,
     patent_meta = _fetch_patent_metadata(unique_doc_ids)
 
     chunks: List[Dict[str, Any]] = []
-    for hit in hits:
+    for idx, hit in enumerate(hits, start=1):
         addl = hit.get("_additional") or {}
         claim_id = str(hit.get("claim_id", "")).strip()
         doc_id = str(hit.get("doc_id", "")).strip()
@@ -1416,8 +1416,10 @@ def retrieve_context(state: Patent_Miner_State,
         snippet = text[:500]
         best_claim_type = str(hit.get("claim_type") or "")
 
-        # Include SearchItem-compatible fields in metadata for API shaping.
         metadata = {
+            # citation id for THIS query only (used for inline [n] citations)
+            "cite_id": idx,
+
             "id": doc_id if effective_search_scope == SEARCH_SCOPE_PATENT else hit.get("claim_id") or addl.get("id", ""),
             "title": patent_row.get("title", ""),
             "snippet": snippet,
@@ -1436,7 +1438,15 @@ def retrieve_context(state: Patent_Miner_State,
         }
         chunks.append({"text": text, "metadata": metadata})
 
-    joined_context = "\n\n".join(c["text"] for c in chunks if c.get("text"))
+    # IMPORTANT: preserve citation ids in the context the LLM sees
+    joined_context = "\n\n".join(
+        f"[{c['metadata']['cite_id']}] "
+        f"doc_id={c['metadata'].get('doc_id','')} "
+        f"claim_id={c['metadata'].get('claim_id','')}\n"
+        f"{c['text']}"
+        for c in chunks
+        if c.get("text")
+    )
 
     return {"joined_context": joined_context, "retrieved_context": chunks}
     

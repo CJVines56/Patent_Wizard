@@ -71,27 +71,33 @@ def query_route(state: Patent_Miner_State) -> retrievalstate:
 
     return {"retrieval_required": needs_retrieval, "routing_decision_raw": text}
 
-
+## Evaluation edits - change for final
 
 rusty_prompt = (
     "You are a patent search and retrieval assistant.\n"
     "Given the question, retrieved context and summary of conversation below:\n\n"
     "Question: {question}\n\n"
-    "Retrieved context:\n{context}\n\n"
-    "Conversation summary: \n{summary}\n\n"
-    "Use three sentences maximum to respond to the user. If the context is not relevant, say so.\n"
+    "Retrieved context (each block starts with a citation like [1], [2], etc.):\n"
+    "{context}\n\n"
+    "Conversation summary:\n{summary}\n\n"
+    "Instructions:\n"
+    "- Use ONLY the retrieved context to answer.\n"
+    "- Every factual statement must end with an inline citation like [1] or [1-3].\n"
+    "- Use only citation numbers that appear in the retrieved context.\n"
+    "- If the context does not contain the answer, say that explicitly.\n"
+    "- Do not invent citations.\n\n"
+    "- Use a maximum of three sentences.\n"
 )
 
 def rusty_answer(state: Patent_Miner_State):
     question = state["messages"][-1].content
     context = state.get("joined_context") or ""
-    summary=state.get("context")
+    summary = state.get("context")
 
     prompt = rusty_prompt.format(question=question, context=context, summary=summary)
-
     response_text = nodes_model.invoke([{"role": "user", "content": prompt}]).content
 
-    return {"messages": [{"role": "assistant", "content": response_text}], "answer": response_text}
+    return {"messages": [{"role": "assistant", "content": response_text}], "answer": response_text, "cleaned_query": question}
 
 
 general_prompt = (
@@ -112,7 +118,7 @@ def general_answer(state: Patent_Miner_State):
     ## Rewrite invoke method -- 3/17
     response_text = nodes_model.invoke([{"role": "user", "content": prompt}]).content
 
-    return {"messages": [{"role": "assistant", "content": response_text}], "answer": response_text}
+    return {"messages": [{"role": "assistant", "content": response_text}], "answer": response_text, "cleaned_query": question}
 
 ## Message summarization ##
 

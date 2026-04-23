@@ -1,5 +1,61 @@
 # Session Changelog
 
+## 2026-04-23 12:23:11 CDT
+- File: `backend/orchestrator/nodes.py`
+- Lines changed: `rusty_prompt`, `rusty_answer`, and `general_answer`.
+- Problem: evaluation runs could not reliably recover the final cleaned query, and the answer prompt did not constrain citation formatting.
+- Change: added citation-specific response instructions and returned `cleaned_query` alongside generated answers.
+- Why: makes downstream eval capture the finalized user query and keeps answer generation aligned with inline-citation output.
+
+- File: `backend/orchestrator/patent_miner_classes.py`
+- Lines changed: `Patent_Miner_State` field definitions.
+- Problem: orchestrator state had no explicit slot for the cleaned query used during evaluation.
+- Change: added an optional `cleaned_query` field to the shared state model.
+- Why: preserves the rewritten question across nodes without overloading unrelated state fields.
+
+- File: `backend/orchestrator/tools.py`
+- Lines changed: retrieval chunk assembly and `joined_context` formatting.
+- Problem: retrieved context exposed to the model had no stable per-result citation numbering.
+- Change: assigned per-query `cite_id` values and embedded them into the joined context passed to the answer node.
+- Why: gives the model concrete citation anchors that match the retrieved chunks.
+
+- File: `backend/orchestrator/regular_eval.py`
+- Lines changed: imports, question-path fallback list, cleaned-question extraction, and evaluator setup helpers.
+- Problem: the eval module was brittle to missing optional packages and did not defensively recover the cleaned query or the repo's existing question-file layout.
+- Change: made optional dependencies lazy/import-safe, added repo-relative fallback paths for `regular_validation_I.txt`, and made question extraction fall back through stored messages before using the original question.
+- Why: keeps the eval utility importable in lighter environments and makes its question loading/extraction logic match the current repository state.
+
+- File: `tests/test_regular_eval.py`
+- Lines changed: cleaned-query and question-path regression tests.
+- Problem: the focused eval tests no longer matched the current state contract or the actual fallback file location.
+- Change: updated the tests to cover `cleaned_query` preference, message fallback behavior, and the existing repo-relative validation path.
+- Why: preserves regression coverage for the eval behavior that is now being committed.
+
+- File: `docs/SESSION_CHANGELOG.md`
+- Lines changed: new top-of-file session entry.
+- Problem: this task changed multiple repository files without a matching audit entry.
+- Change: logged the orchestrator citation/eval updates and the aligned test coverage.
+- Why: preserves the handoff trail required by `AGENTS.md`.
+
+## 2026-04-22 19:12:24 CDT
+- File: `backend/orchestrator/regular_eval.py`
+- Lines changed: full file refactor for import/path resolution, per-question thread isolation, row filtering, and CLI entry flow.
+- Problem: the eval script reused one LangGraph thread across all questions, depended on a fragile local import/path, and emitted noisy context dumps while assuming a missing validation file.
+- Change: made graph import lazy and package-safe, resolved question files from repo-relative paths, generated distinct thread ids per sample, extracted cleaned questions/context more defensively, filtered invalid eval rows, and added CLI-configurable execution.
+- Why: prevents cross-sample memory contamination and makes the eval entry point safer to run from the repository without brittle assumptions.
+
+- File: `tests/test_regular_eval.py`
+- Lines changed: new file with focused unit coverage for cleaned-question extraction, question-path fallback, and unique thread id generation.
+- Problem: the safety-critical eval behavior had no regression coverage.
+- Change: added tests targeting the integration risks addressed in `regular_eval.py`.
+- Why: keeps the isolation and path-handling fixes from regressing silently.
+
+- File: `docs/SESSION_CHANGELOG.md`
+- Lines changed: new top-of-file session entry.
+- Problem: this task modified repository files without a matching audit entry.
+- Change: logged the `regular_eval.py` hardening work and new tests.
+- Why: preserves the handoff trail required by `AGENTS.md`.
+
 ## 2026-04-21 16:26:44 CDT
 - File: [backend/app/api/search.py](C:/Users/Optim/Patent_Wizard/backend/app/api/search.py)
 - Lines changed: `_retrieve_payload` helper inside the `/api/search` handler.

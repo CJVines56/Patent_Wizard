@@ -5,6 +5,7 @@ from langmem.short_term import RunningSummary
 
 class Patent_Miner_State(MessagesState):
     # in Patent_Miner_State definition 
+    cleaned_query: Optional[str] = None
     context: dict[str, RunningSummary] = None
     joined_context: Optional[str] = None
     retrieved_context: Optional[List[Dict[str, Any]]] = None
