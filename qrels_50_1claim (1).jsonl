@@ -1,0 +1,50 @@
+{"query": "Detecting robot motion-cycle failure modes by capturing images at specific poses and classifying them with a convolutional neural network", "relevant_claim_ids": ["12403596-CLM-1"]}
+{"query": "Combined-cycle plant using hydrogen/oxygen combustion to reheat steam before a downstream steam turbine stage", "relevant_claim_ids": ["12404805-CLM-1"]}
+{"query": "MRI method to characterize long-time-constant eddy currents using calibration scans and pseudo-continuous acquisition sequences", "relevant_claim_ids": ["12405337-CLM-1"]}
+{"query": "Rejecting requests to switch the connection destination to another base station while an overlap-area restriction rule applies", "relevant_claim_ids": ["12408099-CLM-2"]}
+{"query": "Detachable mounting mechanism configured to engage a vehicle door support structure in order to hold a projection unit in place", "relevant_claim_ids": ["12407800-CLM-1"]}
+{"query": "Augmented-reality adaptive lens stack that controls focal depth using polarization-selective birefringent elements", "relevant_claim_ids": ["12405472-CLM-1"]}
+{"query": "Optical system applying different optical power depending on polarization direction relative to a birefringent optic axis", "relevant_claim_ids": ["12405472-CLM-2"]}
+{"query": "Ceramic susceptor formulation that includes selected dopants such as MgO, graphene, or rare-earth complex oxides to tune properties", "relevant_claim_ids": ["12404215-CLM-1"]}
+{"query": "Using a logically centralized policy server to receive, store, and distribute API authorization policies to local agents", "relevant_claim_ids": ["12407647-CLM-1"]}
+{"query": "Location-bound login request that includes conventional credentials (e.g., password) alongside the location attestation", "relevant_claim_ids": ["12406038-CLM-1"]}
+{"query": "Mapping precoded symbols into transmission layers and codewords as part of PMI-based precoding feedback", "relevant_claim_ids": ["12407392-CLM-1"]}
+{"query": "Switch-mode power supply that avoids overload by shaping the feedback-to-output relationship before enabling switching", "relevant_claim_ids": ["12407255-CLM-1"]}
+{"query": "Hybrid-cloud data routing that randomly samples datasets and assigns them to private vs public cloud processing based on classification", "relevant_claim_ids": ["12406085-CLM-1"]}
+{"query": "Splitting a global Benes permutation into sub-permutations for distributed or hierarchical routing controller computation", "relevant_claim_ids": ["12407629-CLM-1"]}
+{"query": "Preventing handover attempts to a different access node when a coverage overlap policy is in effect", "relevant_claim_ids": ["12408099-CLM-2"]}
+{"query": "Vehicle-mounted projector attached to a rear door mechanism to project video when the vehicle is parked or open", "relevant_claim_ids": ["12407800-CLM-1"]}
+{"query": "Placing acoustic pressure sensors on components other than the flexible hydraulic hose to improve measurement robustness", "relevant_claim_ids": ["12405249-CLM-1"]}
+{"query": "Manufacturing step that widens the top of an opening to create a wide upper region and a narrower lower region in a lid layer", "relevant_claim_ids": ["12406897-CLM-1"]}
+{"query": "Dual-cycle power generation system in which steam temperature is elevated by combusting hydrogen with oxygen prior to a subsequent steam turbine section", "relevant_claim_ids": ["12404805-CLM-1"]}
+{"query": "Producing an integrated golf club head by binder-jet 3D printing the body, face insert, and hosel as one build", "relevant_claim_ids": ["12403362-CLM-1"]}
+{"query": "Identifying faults during a robot’s operating sequence by acquiring visual data at defined joint configurations and evaluating the data with a deep learning vision model", "relevant_claim_ids": ["12403596-CLM-1"]}
+{"query": "Additively manufactured golf club head with internal lattice or weight-tuning geometry to control center of gravity and mechanical response", "relevant_claim_ids": ["12403362-CLM-1"]}
+{"query": "Distributing local API authorization policies to agents across multiple computers for on-device API call authorization", "relevant_claim_ids": ["12407647-CLM-1"]}
+{"query": "Processing the datasets marked for public cloud in a segmented hybrid-cloud workflow after random sampling and assignment", "relevant_claim_ids": ["12406085-CLM-1"]}
+{"query": "Choosing a squared time slot bundling setting according to the device’s current subcarrier-spacing configuration for downlink control observation", "relevant_claim_ids": ["12408176-CLM-1"]}
+{"query": "A capacitive deformation sensor that increases electrical response by using a crack-forming conductive nanostructured layer that changes conduction as stretching occurs", "relevant_claim_ids": ["12405102-CLM-1"]}
+{"query": "A strain-sensing electrode layout using repeated linear traces that intentionally separate under tensile loading to produce a measurable electrical shift", "relevant_claim_ids": ["12405102-CLM-1"]}
+{"query": "Preventing converter overstress by combining output-scaling feedback with load monitoring to disable the power switching device during excessive demand", "relevant_claim_ids": ["12407255-CLM-1"]}
+{"query": "Particle-therapy source apparatus with a removable irradiation target module that translates inside a beamline and keeps conduction through mating contact interfaces", "relevant_claim_ids": ["12403330-CLM-1"]}
+{"query": "Establishing power/ground continuity for a replaceable module using sliding contact structures between a translating member and a fixed conductor, avoiding cable leads", "relevant_claim_ids": ["12403330-CLM-1"]}
+{"query": "MIMO control reporting method that conveys beamforming/precoding state on both scheduled and event-triggered occasions to aid multi-antenna downlink signaling", "relevant_claim_ids": ["12407392-CLM-1"]}
+{"query": "Computing a multistage switching fabric’s control settings concurrently from a desired mapping between ingress and egress ports", "relevant_claim_ids": ["12407629-CLM-1"]}
+{"query": "Limiting serving-node changes for a user device while it resides in a coverage-intersection area of ground-based and satellite-access systems", "relevant_claim_ids": ["12408099-CLM-2"]}
+{"query": "Assessing fluid-line behavior by sensing pressure-related acoustic signatures at spaced measurement points along a hydraulic path", "relevant_claim_ids": ["12405249-CLM-1"]}
+{"query": "Granting sign-in authorization only when the device’s asserted physical presence matches a required location context at the time of the access attempt", "relevant_claim_ids": ["12406038-CLM-1"]}
+{"query": "Downlink control-channel watch schedule configured by higher-layer signaling that groups time resources in powers of two and alternates active and inactive observation windows", "relevant_claim_ids": ["12408176-CLM-1"]}
+{"query": "Creating a sparse trainable model at startup by repeatedly ranking parameters via an information-flow style criterion and removing low-importance connections without using a data-driven training phase", "relevant_claim_ids": ["12406185-CLM-1"]}
+{"query": "Assigning initial importance scores to weights/units and eliminating those under a cutoff while applying safeguards so entire layers do not degenerate during the sparse-selection procedure", "relevant_claim_ids": ["12406185-CLM-1"]}
+{"query": "Integrated-circuit enclosure cover that includes a compliant intermediate layer and a patterned aperture positioned to match the chip perimeter walls for mechanical/assembly benefits", "relevant_claim_ids": ["12406897-CLM-1"]}
+{"query": "Heated process-support ceramic material tuned for desirable electrical characteristics at elevated temperature while maintaining high thermal conduction under ambient conditions", "relevant_claim_ids": ["12404215-CLM-1"]}
+{"query": "UE slot grouping control channel monitoring", "relevant_claim_ids": ["12408176-CLM-1"]}
+{"query": "replaceable target electrical contact in beamline", "relevant_claim_ids": ["12403330-CLM-1"]}
+{"query": "overload shutdown in switching converter", "relevant_claim_ids": ["12407255-CLM-1"]}
+{"query": "UE downlink control monitoring with slot grouping parameter and configured monitoring periodicity", "relevant_claim_ids": ["12408176-CLM-1"]}
+{"query": "Capacitive strain sensor with fragmented carbon nanotube electrode layer producing strain-dependent electrical response", "relevant_claim_ids": ["12405102-CLM-1"]}
+{"query": "Switching regulator overload shutdown using current sensing and feedback-divider detection to inhibit the switch element", "relevant_claim_ids": ["12407255-CLM-1"]}
+{"query": "Replaceable BNCT target assembly sliding in a proton beam channel with electrical contact maintained by conductive contacts", "relevant_claim_ids": ["12403330-CLM-1"]}
+{"query": "PMI feedback reporting with multiple periodicities for downlink precoded signal reception and decoding", "relevant_claim_ids": ["12407392-CLM-1"]}
+{"query": "Benes network routing configuration computed from an input-output permutation for a multistage switching network", "relevant_claim_ids": ["12407629-CLM-1"]}
+{"query": "Neural network pruning at initialization using synaptic flow scoring to select a sparse trainable subnetwork without training", "relevant_claim_ids": ["12406185-CLM-1"]}
